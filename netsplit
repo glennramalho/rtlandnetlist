@@ -69,8 +69,10 @@ if ($ARGV[0] =~ m/\.gz$/) {
 ################################################################################
 # Now we need to build a hierarchy with all the contents of each cell. To be
 # simpler, we dump the comments.
-print "Building Hierarchy...\n";
-$module = "";
+print STDERR "Building Hierarchy...\n";
+$inmodule = "";
+%module = ();
+%submodules = ();
 while(<NETLIST>) {
    # We first must remove the comments or they will confuse us. There should
    # not be much here though as structural netlists usually are computer
@@ -84,16 +86,17 @@ while(<NETLIST>) {
       s#/\*.*\*/##g;
       if (s#/\*.*##) {
          $more = "";
-         while ($more !~ s#.*/## && ! eof(NETLIST)) { $more = <NETLIST>; }
+         while ($more !~ s#.*\*/## && ! eof(NETLIST)) { $more = <NETLIST>; }
          $_ .= $more;
          redo;
       }
    }};
 
    # We eliminate any whitespaces
-   s/^[ \s]*//;
-   s/[ \s]*$//;
+   s/^\s+//;
+   s/\s+$//;
    next if /^$/;
+   $_ .= "\n";
 
    # All lines should end with a semicolon. If one does not, we then need
    # to attach the following lines too until we find it. endmodule keyword
@@ -105,7 +108,7 @@ while(<NETLIST>) {
    # We add a space before the parenthesis to make it easier to split.
    s/(\S)\(/$1 (/;
    # We now check what kind of statement this is.
-   split;
+   @_ = split;
 
    # If we find a module keyword, we begin recording everything we see
    # including the top line
@@ -117,6 +120,9 @@ while(<NETLIST>) {
    } elsif ($_[0] eq "endmodule") {
       # We add the endmodule to the list.
       $module{$inmodule} .= $_;
+      print STDERR
+         "Found module $inmodule with subblocks: $submodule{$inmodule}\n"
+         if $opt_d;
       # And we exit the module.
       $inmodule = "";
    # And the remaining lines we record, but only of if we are not in the module.
@@ -142,7 +148,7 @@ if (! defined $module{$block}) {
 # We will built it recursively. We do have an issue though, a cell can show up
 # on multiple places of the hierarchy, especially if it has not been uniquefied.
 # So, we need to keep track of which blocks have already dumped blocks.
-@dumpedblocks = ();
+%dumpedblocks = ();
 
 # And dumpblock will be called to dump each block.
 sub dumpblock {
@@ -150,23 +156,25 @@ sub dumpblock {
    local (@subblocks);
    local ($subblock);
 
+   print STDERR "Entering $this\n" if $opt_d;
+
    # We first need to find out if this block exists, it might be a library cell.
    # If it has no module lines, it has no code, it is a library cell.
-   if (! defined $module{$this}) {
-      return;
-   }
+   return if ! defined $module{$this};
 
    # If the cell has already been dumped, we also skip it.
-   if ($dumpedblocks{$this}) {
-      return;
-   }
+   return if $dumpedblocks{$this};
+
+   # We add this block to the list.
+   $dumpedblocks{$this} = 1;
 
    # Now we check if this block has subblocks, we will process the subblocks
    # first as we want it to show up from bottom up. Not all tools need this but
    # some do.
-   if ($submodule{$inmodule} ne "") {
-      @subblocks = split $submodule{$inmodule};
-      foreach $subblock (@subblocks) { dumpblock($subblock); }
+   print STDERR "Processing $this:$submodule{$this}\n" if $opt_d;
+   if ($submodule{$this} ne "") {
+      @subblocks = split /\s/, $submodule{$this};
+      foreach $subblock (@subblocks[1..$#subblocks]) { dumpblock($subblock); }
    }
 
    # And we can then dump this block.
