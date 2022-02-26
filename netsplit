@@ -1,0 +1,187 @@
+#!/usr/bin/perl
+################################################################################
+# Copyright (c) 2019 Glenn Ramalho
+################################################################################
+# File: netsplit
+# Author: Glenn Ramalho
+################################################################################
+# Description: Extracts a subtree from a structural netlist with all it's
+#   subcomponents. Does not work with RTL.
+################################################################################
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+
+$progname=$0;
+$progname=~s#.*/##;
+$version = '$Id$' . "\n";
+$usage=
+"usage: $progname [-hV]
+       $progname [-d] block file.v\n";
+$help="
+This program extracts the subtree of cells for a structural netlist. It is
+not compatible with RTL, just with plain Verilog structural netlists.
+
+-h     help
+-V     Version
+-d     debug
+block  top level block to extract, sent to STDOUT
+file.v source netlist
+";
+
+use Getopt::Std;
+getopts('hVd') || die $usage;
+
+if ($opt_h) {
+   printf $usage;
+   printf $help;
+   exit 0;
+}
+if ($opt_V) {
+   printf $version;
+   exit 0;
+}
+if (@ARGV != 2) {
+   die $usage;
+}
+
+$block = $ARGV[0];
+$netlist = $ARGV[1];
+
+# We first open the netlist. Netlists though are often compressed. So we need
+# to check the filename. If it ends in .gz, we gunzip it first.
+if ($ARGV[0] =~ m/\.gz$/) {
+   open NETLIST, "gunzip -c $netlist|" || die "$progname: $netlist: $!\n";
+} else {
+   open NETLIST, $netlist || die "$progname: $netlist: $!\n";
+}
+
+
+################################################################################
+# Now we need to build a hierarchy with all the contents of each cell. To be
+# simpler, we dump the comments.
+print "Building Hierarchy...\n";
+$module = "";
+while(<NETLIST>) {
+   # We first must remove the comments or they will confuse us. There should
+   # not be much here though as structural netlists usually are computer
+   # generated with no manipulation.
+   
+   # C++ style comments and single-line single line comments are easy, the
+   # multiline comments might need a few passes.
+   do {{
+      s#//.*##;
+      # C style singl
+      s#/\*.*\*/##g;
+      if (s#/\*.*##) {
+         $more = "";
+         while ($more !~ s#.*/## && ! eof(NETLIST)) { $more = <NETLIST>; }
+         $_ .= $more;
+         redo;
+      }
+   }};
+
+   # We eliminate any whitespaces
+   s/^[ \s]*//;
+   s/[ \s]*$//;
+   next if /^$/;
+
+   # All lines should end with a semicolon. If one does not, we then need
+   # to attach the following lines too until we find it. endmodule keyword
+   # though does not have a semicolon!
+   while (! /;$/ && ! /endmodule$/ && ! eof (NETLIST)) {
+      $_ .= <NETLIST>;
+   }
+
+   # We add a space before the parenthesis to make it easier to split.
+   s/(\S)\(/$1 (/;
+   # We now check what kind of statement this is.
+   split;
+
+   # If we find a module keyword, we begin recording everything we see
+   # including the top line
+   if ($_[0] eq "module") {
+      $inmodule = $_[1];
+      $module{$inmodule} .= $_;
+
+   # endmodule will finish the module
+   } elsif ($_[0] eq "endmodule") {
+      # We add the endmodule to the list.
+      $module{$inmodule} .= $_;
+      # And we exit the module.
+      $inmodule = "";
+   # And the remaining lines we record, but only of if we are not in the module.
+   } elsif ($inmodule ne "") {
+      # We store the line
+      $module{$inmodule} .= $_;
+      # And we record any subblocks this cell might have, regardless of them
+      # being library cells or blocks. We only need one of each kind though.
+      # # And we record any subblocks this cell might have, regardless of them
+      # being library cells or blocks. We only need one of each kind though.
+      $submodule{$inmodule} .= " $_[0]";
+   }
+}
+
+# We check if the block was found.
+if (! defined $module{$block}) {
+   die "$progname: $netlist: could not find module $block\n";
+}
+
+################################################################################
+# We can build the new netlist
+
+# We will built it recursively. We do have an issue though, a cell can show up
+# on multiple places of the hierarchy, especially if it has not been uniquefied.
+# So, we need to keep track of which blocks have already dumped blocks.
+@dumpedblocks = ();
+
+# And dumpblock will be called to dump each block.
+sub dumpblock {
+   local ($this) = @_;
+   local (@subblocks);
+   local ($subblock);
+
+   # We first need to find out if this block exists, it might be a library cell.
+   # If it has no module lines, it has no code, it is a library cell.
+   if (! defined $module{$this}) {
+      return;
+   }
+
+   # If the cell has already been dumped, we also skip it.
+   if ($dumpedblocks{$this}) {
+      return;
+   }
+
+   # Now we check if this block has subblocks, we will process the subblocks
+   # first as we want it to show up from bottom up. Not all tools need this but
+   # some do.
+   if ($submodule{$inmodule} ne "") {
+      @subblocks = split $submodule{$inmodule};
+      foreach $subblock (@subblocks) { dumpblock($subblock); }
+   }
+
+   # And we can then dump this block.
+   print "\n";
+   print $module{$this};
+};
+
+print <<EOF;
+################################################################################
+# Netlist for block $block
+# Extracted from netlist $netlist
+# Extracted by $progname
+################################################################################
+EOF
+
+dumpblock($block);
+
+exit 0;

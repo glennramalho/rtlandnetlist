@@ -1,0 +1,314 @@
+#!/usr/bin/perl
+################################################################################
+# Copyright (c) 2019 Glenn Ramalho
+################################################################################
+# File: hierinstcnt
+# Author: Glenn Ramalho
+################################################################################
+# Description: This script attempts to print a hierarchy of a structural verilog
+#   netlist with some basic metrics.
+################################################################################
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+
+$progname=$0;
+$progname=~s#.*/##;
+$version = '$Id$' . "\n";
+$usage=
+"usage: $progname [-hV]
+       $progname [-dSi] [-s lib] [-l level] [-A factor] [-L factor] file.v\n";
+$help="
+This program prints the cells in a Verilog netlist and how many times each is
+instantiated in the hierarchy.
+
+-h     help
+-V     Version
+-d     debug, implies -L
+-S     list library stats
+-s     calculate power using the following liberty file
+-i     print hierarchy in instances instead of modules
+-l     specify maximum level depth.
+-A     Multiply the area by a factor.
+-L     Multiply the leakage by a factor.
+";
+
+use Getopt::Std;
+getopts('hVdiSl:s:A:L:') || die $usage;
+
+if ($opt_h) {
+   printf $usage;
+   printf $help;
+   exit 0;
+}
+if ($opt_V) {
+   printf $version;
+   exit 0;
+}
+if (@ARGV != 1) {
+   die $usage;
+}
+$opt_S = 1 if ${opt_d};
+
+$module = "";
+sub nl {
+  local ($nl) = @_;
+  chomp $nl;
+  $nl =~ s/\(\*.*\*\)//;
+  $nl =~ s#//.*##;
+  $nl =~ s/^[  ]+//;
+  $nl =~ s/[  ]$//;
+  $nl =~ s/\(/ ( /;
+  $nl =~ s/\)/ ) /;
+
+  $nl;
+}
+
+# If opt_s is used, we need to get the data from the liberty file.
+$lvl=0;
+$incomment=0;
+$leakmult = 1;
+$default_leakage_power = 0;
+if ($opt_s) {
+   open(LIB, $opt_s) || die "$progname: $opt_s: $!\n";
+   print "Reading liberty file $opt_s\n";
+   while(<LIB>) {
+      # First we get rid of whitespaces;
+      chomp;
+      if ($incomment) {
+         next unless (s#.*\*/##);
+         $incomment = 0;
+      }
+      s#/\*.*\*/##;
+      if (s#/\*.*##) {
+         $incomment = 1;
+      }
+      s/^\s*//;
+      s/\s*$//;
+      next if /^$/;
+
+      # We grab the keyword for this line, if any.
+      m/^([^{}\s]+)/;
+      $keyword = $1;
+
+      ##########################################################################
+      # Level Change
+      ##########################################################################
+      if (/\{/) {
+         # We store the keyword
+         push @lvl, $keyword;
+
+         # If we see a cell, we set the tag.
+         if ($lvl == 1 && /^cell\s*\(\s*(.+)\s*\)/) {
+            print "*** Cell $1\n" if $opt_d;
+            $cellname = $1;
+         }
+         $lvl = $lvl + 1;
+      } elsif (/\}/) {
+         if ($lvl == 2 && $lvl[$#lvl] eq "cell") {
+            print "*** Closing $cellname\n" if ${opt_d};
+            if (! defined $leak{$cellname}) {
+               $leak{$cellname} = $default_leakage_power * $leakmult;
+            }
+            if ($opt_S) {
+               print "cell $cellname:";
+               print " area = $area{$cellname}";
+               print ", leakage = $leak{$cellname}$leakunit";
+               print "\n";
+            }
+            $cellname = "";
+         }
+         pop @lvl;
+         $lvl = $lvl - 1;
+      }
+
+      if ($lvl == 1 && /^leakage_power_unit\s*:\s*"([0-9]*)([^0-9]+)"\s*;/) {
+         $leakmult=$1;
+         $leakunit=$2;
+      }
+      if ($lvl == 1 && /^default_leakage_power\s*:\s*(.*)\s*;/) {
+         $default_leakage_power=$1;
+      }
+      if ($lvl == 2 && /^cell_leakage_power\s*:\s*(.*)\s*;/) {
+         $leak{$cellname} = $1 * $leakmult;
+      }
+      if ($lvl == 2 && /^area\s*:\s*(.*)\s*;/) {
+         $area{$cellname} = $1 + 0;
+      }
+
+   }
+   close LIB;
+
+   print "LIB $opt_s\n";
+   print "Leakage Unit $leakunit\n";
+}
+
+# If the -A or -L was not used, we set it to a default.
+if (defined $opt_A) {
+  printf "Using an area factor of $opt_A\n";
+} else {
+  $opt_A = 1;
+}
+if (defined $opt_L) {
+  printf "Using an power factor of $opt_L\n";
+} else {
+  $opt_L = 1;
+}
+
+# If the file ends in .gz it must be gzipped. We unzip it and read it then.
+if ($ARGV[0] =~ m/\.gz$/) {
+   open FILE, "gunzip -c $ARGV[0]|" || die "$progname: $ARGV[0]: $!\n";
+} else {
+   open FILE, $ARGV[0] || die "$progname: $ARGV[0]: $!\n";
+}
+print "Reading netlist $ARGV[0]\n";
+while(<FILE>) {
+   # Remove whitespace
+   $_ = nl($_);
+   next if m/^$/;
+   last if m/`ifdef/;
+
+   # When we find the endmodule we exit. We also compute the power consumed.
+   if (/endmodule/) {
+      $module = ""; 
+      next;
+   }
+   # If a line does not end in a semicolon, we merge it with the next line.
+   # We need to stop if we hit the end of file.
+   while ($_ !~ /;$/ && ! eof(FILE) ) {
+      $_ = nl($_ . <FILE>);
+   }
+
+   # Once we hit here we can split the line.
+   @_ = split /[      ]+/;
+
+   # Any line with a pin or wire keyword we can skip.
+   next if $_[0] eq "input" || $_[0] eq "output" || $_[0] eq "inout"
+      || $_[0] eq "wire";
+
+   # If it is a module we need the module name
+   if ($_[0] eq "module") {
+       $module = $_[1];
+       $lastmodule = $module;
+       $ismodule{$_[1]} = 1;
+
+   # If we are in instance mode, we need to check the component. If it is
+   # primitive, we put it in the count list. If it is not primitive, we put
+   # it in the instance list.
+   } elsif ($opt_i && $ismodule{$_[0]} == 1) {
+      $inst{$module}{$_[1]} = $_[0];
+
+   # Anything else gets counted.
+   } else {
+      $cnt{$module}{$_[0]} = $cnt{$module}{$_[0]} + 1;
+   }
+}
+close FILE;
+
+print "Generating Table...\n";
+
+sub getinst {
+   local ($lvl, $this, $thisinst) = @_;
+   local ($v) = 0;
+   local ($p) = 0;
+   local ($a) = 0;
+   local ($m) = "";
+   if ($ismodule{$this} != 1) {
+      $v = 1;
+      $p = $leak{$this};
+      $a = $area{$this};
+   } else {
+      $v = 0;
+      $p = 0;
+      $a = 0;
+      # We now go down the hierarchical list
+      # If we are in inst mode, first we do the instances
+      if ($opt_i) {
+         foreach $i (keys %{$inst{$this}}) {
+            $m = $inst{$this}{$i};
+
+            # Now we call the function recursively to calculate the values of
+            # the subcells.
+            local($sub_v,$sub_p,$sub_a) = getinst($lvl + 1, $m, $i);
+            $v = $v + $sub_v;
+            $p = $p + $sub_p;
+            $a = $a + $sub_a;
+            if ($opt_d) {
+               print "mod $this, inst $i -> sub (v=$sub_v, p=$sub_p, a=$sub_a) "
+                  . "-> v=$v,p=$p,a=$a\n"
+            }
+         }
+      }
+      # And then we count the leaves.
+      foreach $m (keys %{$cnt{$this}}) {
+         # Now we call the function recursively to calculate the values of the
+         # subcells.
+         local($sub_v,$sub_p,$sub_a) = getinst($lvl + 1, $m, "");
+         $v = $v + $sub_v * $cnt{$this}{$m};
+         $p = $p + $sub_p * $cnt{$this}{$m};
+         $a = $a + $sub_a * $cnt{$this}{$m};
+         if ($opt_d) {
+            print "mod $this obj $m -> " .
+               "sub (v=$sub_v, p=$sub_p, a=$sub_a) * $cnt{$this}{$m} " .
+               "-> v=$v,p=$p,a=$a\n"
+         }
+      }
+
+      # It is not primitive, so we print what it has.
+      if ($opt_d && $opt_s) {
+         print "module $this has $v cells and $p leakage\n";
+      } elsif ($opt_d) {
+         print "module $this has $v cells\n";
+      }
+
+      # And we go generating the report
+      if ($opt_l eq "" || $lvl < $opt_l) {
+         # We need to decide if this will be listed as a module or as a inst.
+         # If we reach here this is not a leaf, so if there was a a instance
+         # name we use it.
+         if ($opt_i && $thisinst ne "") {
+            $cln = ("." x $lvl) . $thisinst;
+         } else {
+            $cln = ("." x $lvl) . $this;
+         }
+
+         # We then generate the table row. If a library was given we put the
+         # columns for the library data.
+         if ($opt_s) {
+            $cln = substr($cln, 0, 50) if length($cln) > 50;
+            push @dump,
+               sprintf("%-50s %10.3f %10.5f %7d\n", $cln, $a*$opt_A, $p*$opt_L,
+               $v);
+         } else {
+            $cln = substr($cln, 0, 70) if length($cln) > 70;
+            push @dump, sprintf("%-70s %7d\n", $cln, $v);
+         }
+      }
+   }
+   $v,$p,$a;
+}
+
+# Now we generate the table.
+if ($opt_s) {
+   $powerlabel = "power(" . $leakunit . ")";
+   printf("%-50s %10s %10s %7s\n", "Instance", "area", $powerlabel, "cells");
+   printf("%-50s %10s %10s %7s\n", "=" x 50, "=" x 10, "=" x 10, "=" x 7);
+} else {
+   printf("%-70s %7s\n", "Instance", "cells");
+   printf("%-70s %7s\n", "=" x 70, "=" x 5);
+}
+
+@dump = ();
+getinst(0, $lastmodule, "");
+for $_ (0..$#dump) {
+   print ${dump[$#dump-$_]};
+}
