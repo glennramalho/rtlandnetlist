@@ -59,12 +59,11 @@ $netlist = $ARGV[1];
 
 # We first open the netlist. Netlists though are often compressed. So we need
 # to check the filename. If it ends in .gz, we gunzip it first.
-if ($ARGV[0] =~ m/\.gz$/) {
+if ($netlist =~ m/\.gz$/) {
    open NETLIST, "gunzip -c $netlist|" || die "$progname: $netlist: $!\n";
 } else {
    open NETLIST, $netlist || die "$progname: $netlist: $!\n";
 }
-
 
 ################################################################################
 # Now we need to build a hierarchy with all the contents of each cell. To be
@@ -136,6 +135,8 @@ while(<NETLIST>) {
       $submodule{$inmodule} .= " $_[0]";
    }
 }
+
+print STDERR "Looking for $block\n";
 
 # We check if the block was found.
 if (! defined $module{$block}) {
