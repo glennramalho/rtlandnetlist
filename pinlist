@@ -1,0 +1,294 @@
+#!/usr/bin/perl
+################################################################################
+# Copyright (c) 2019 Glenn Ramalho
+################################################################################
+# File: netsplit
+# Author: Glenn Ramalho
+################################################################################
+# Description: Extracts a subtree from a structural netlist with all it's
+#   subcomponents. Does not work with RTL.
+################################################################################
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+
+$progname=$0;
+$progname=~s#.*/##;
+$version = '$Id$' . "\n";
+$usage=
+"usage: $progname [-hV]
+       $progname [-d] -D file.def
+       $progname [-d] [block] file.v\n";
+$help="
+This program dumps the pins of a netlist or DEF file. It can also compare two
+lists.
+
+-h     help
+-V     Version
+-d     debug
+-D     use def file
+block  block to dump pin file or compare to DEF file. If ommited, the last block
+       will be used.
+file.v source netlist
+";
+
+use Getopt::Std;
+getopts('hVdD:') || die $usage;
+
+if ($opt_h) {
+   printf $usage;
+   printf $help;
+   exit 0;
+}
+if ($opt_V) {
+   printf $version;
+   exit 0;
+}
+if ($opt_D eq "" && @ARGV != 2 || $opt_D ne "" && @ARGV != 0 && @ARGV != 2) {
+   die $usage;
+}
+
+# If there is no block, the first argument is the file and it better be the
+# DEF
+if (@ARGV == 1) {
+  $block = "";
+  $netlist = $ARGV[1];
+} else {
+  $block = $ARGV[0];
+  $netlist = $ARGV[1];
+}
+
+# If we have a DEF FILE, we extract it first.
+if ($opt_D ne "") {
+  if ($opt_D =~ m/\.gz$/) {
+     open DEF, "gunzip -c $opt_D|" || die "$progname: $opt_D $!\n";
+  } else {
+    open DEF, $opt_D || die "$progname: $opt_D $!\n";
+  }
+  while(<DEF>) {
+    chomp;
+    s/^\s+//;
+    s/\s+$//;
+    next if /^$/;
+    # All lines should end with a semicolon. If one does not, we then need
+    # to attach the following lines too until we find it. endmodule keyword
+    # though does not have a semicolon!
+    while (! /;$/ && ! /^END/i && ! eof (DEF)) {
+      $_ .= <DEF>;
+    }
+    # We split the command
+    @_ = split;
+
+    # Several commands have subcommands. We only care about the PINS.
+    if ($_[0] eq "PINS" && $inpins == 0) {
+      $inpins = 1;
+    } elsif ($_[0] eq "END" && $_[1] eq "PINS") {
+      $inpins = 0;
+    } elsif ($inpins) {
+      # Once we are in the pins, we take them in.
+      if ($_[0] eq "-") {
+        # First we get the name and direction.
+        $pinname = $_[1];
+        if (m/\+\s*DIRECTION\s+([A-Za-z]*)/) {
+          $dir = $1;
+          if ($dir =~ m/^INPUT$/i) { $dir = "i"; }
+          elsif ($dir =~ m/^OUTPUT$/i) { $dir = "o"; }
+          elsif ($dir =~ m/^INOUT$/i) { $dir = "b"; }
+          else { $dir = "?"; }
+        } else {
+          $dir = "-";
+        }
+        # Now we push it onto the list, bus first.
+        if ($pinname =~ s/(\[.*\])//) {
+          $bus = $1;
+        } else {
+          $bus = "";
+        }
+        push @{$defpins{$dir}}, "$bus$pinname";
+      }
+    }
+  }
+}
+
+# Now we look at the netlist, if it was defined.
+# to check the filename. If it ends in .gz, we gunzip it first.
+if ($netlist ne "") {
+  if ($netlist =~ m/\.gz$/) {
+     open NETLIST, "gunzip -c $netlist|" || die "$progname: $netlist: $!\n";
+  } else {
+     open NETLIST, $netlist || die "$progname: $netlist: $!\n";
+  }
+
+  ##############################################################################
+  # Now we need to build a hierarchy with all the contents of each cell. To be
+  # simpler, we dump the comments.
+  print STDERR "Building Hierarchy...\n";
+  $inmodule = "";
+  %module = ();
+  %submodules = ();
+  while(<NETLIST>) {
+     # We first must remove the comments or they will confuse us. There should
+     # not be much here though as structural netlists usually are computer
+     # generated with no manipulation.
+     
+     # C++ style comments and single-line single line comments are easy, the
+     # multiline comments might need a few passes.
+     do {{
+        s#//.*##;
+        # C style singl
+        s#/\*.*\*/##g;
+        if (s#/\*.*##) {
+           $more = "";
+           while ($more !~ s#.*\*/## && ! eof(NETLIST)) { $more = <NETLIST>; }
+           $_ .= $more;
+           redo;
+        }
+     }};
+
+     # We eliminate any whitespaces
+     s/^\s+//;
+     s/\s+$//;
+     next if /^$/;
+     $_ .= "\n";
+
+     # All lines should end with a semicolon. If one does not, we then need
+     # to attach the following lines too until we find it. endmodule keyword
+     # though does not have a semicolon!
+     while (! /;$/ && ! /endmodule$/ && ! eof (NETLIST)) {
+        $_ .= <NETLIST>;
+     }
+
+     # We add a space before the parenthesis to make it easier to split.
+     s/(\S)\(/$1 (/;
+     # We now check what kind of statement this is.
+     @_ = split;
+
+     # If we find a module keyword, we begin recording everything we see
+     # including the top line
+     if ($_[0] eq "module") {
+        $inmodule = $_[1];
+        $module{$inmodule} .= $_;
+
+     # endmodule will finish the module
+     } elsif ($_[0] eq "endmodule") {
+        print "Pins for module $inmodule\n" if $opt_d;
+        print "input: @{$pins{$inmodule}{i}}\n" if $opt_d;
+        print "output @{$pins{$inmodule}{o}}\n" if $opt_d;
+        print "inout @{$pins{$inmodule}{b}}\n" if $opt_d;
+        # We add the endmodule to the list.
+        $module{$inmodule} .= $_;
+        print STDERR
+           "Found module $inmodule with subblocks: $submodule{$inmodule}\n"
+           if $opt_d;
+        # And we exit the module.
+        $inmodule = "";
+     # And the remaining lines we record, but only of if we are not in the
+     # module.
+     } elsif ($inmodule ne "") {
+        # We need to find out what pins we have and put it in the list.
+        if ($_[0] eq "input" || $_[0] eq "output" || $_[0] eq "inout") {
+          if ($_[0] eq "input") { $dir = "i"; }
+          elsif ($_[0] eq "output") { $dir = "o"; }
+          else { $dir = "b"; }
+
+          if ($_[1] =~ /\[.*\]/) {
+            $width="$_[1]";
+            $start=2;
+          } else {
+            $width="";
+            $start=1;
+          }
+          for $pinno ($start..$#_) {
+            $pin = $_[$pinno];
+            $pin =~ s/[;,] *//;
+            push @{$pins{$inmodule}{$dir}}, "$width$pin";
+          }
+        }
+        # We store the line
+        $module{$inmodule} .= $_;
+        # And we record any subblocks this cell might have, regardless of them
+        # being library cells or blocks. We only need one of each kind though.
+        $submodule{$inmodule} .= " $_[0]";
+     }
+  }
+  close NETLIST;
+}
+
+################################################################################
+# Now we process the files.
+
+sub dumpdefpins {
+  local($dir) = @_;
+  foreach $pin (@{$defpins{$dir}}) {
+    if ($pin =~ s/(\[.*\])//) {
+      $width = $1;
+    } else {
+      $width = "";
+    }
+    printf "%s %-7s %-20s\n", $dir, $width, $pin;
+  }
+}
+
+sub dumppins {
+  local($block, $dir) = @_;
+  foreach $pin (@{$pins{$block}{$dir}}) {
+    if ($pin =~ s/(\[.*\])//) {
+      $width = $1;
+    } else {
+      $width = "";
+    }
+    printf "%s %-7s %-20s\n", $dir, $width, $pin;
+  }
+}
+
+sub compare {
+  local($dir) = @_;
+}
+
+# If we have a DEF file and no netlist we dump the netlist
+if ($opt_D ne "" && $netlist eq "") {
+  print "Pins for def file $opt_D\n";
+  dumpdefpins("i");
+  dumpdefpins("o");
+  dumpdefpins("b");
+  dumpdefpins("?");
+  dumpdefpins("-");
+  exit 0;
+}
+
+# If we have a netlist, we expect the block to be valid.
+if ($netlist eq "") {
+  exit 0;
+}
+print STDERR "Looking for $block\n";
+if (! defined $module{$block}) {
+   die "$progname: $netlist: could not find module $block\n";
+}
+
+# Now, if the def is not defined, we dump the block pins to the screen.
+if ($opt_D eq "") {
+  print "Pins for module $block\n";
+  dumppins($block, "i");
+  dumppins($block, "o");
+  dumppins($block, "b");
+  exit 0;
+}
+
+################################################################################
+# Now we should have both, so we can compare the two.
+
+compare("i");
+compare("o");
+compare("b");
+
+
+exit 0;
