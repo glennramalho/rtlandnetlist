@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ################################################################################
-# Copyright (c) 2019 Glenn Ramalho
+# Copyright (c) 2022 Glenn Ramalho
 ################################################################################
 # File: netsplit
 # Author: Glenn Ramalho
@@ -108,13 +108,43 @@ if ($opt_D ne "") {
           $dir = "-";
         }
         # Now we push it onto the list, bus first.
-        if ($pinname =~ s/(\[.*\])//) {
-          $bus = $1;
+        if ($pinname =~ s/\[(.*)\]//) {
+          $bus = ",$1";
         } else {
           $bus = "";
         }
-        push @{$defpins{$dir}}, "$bus$pinname";
+
+        # We then check. If it is another bit for an existing bus, then, we
+        # add it to the list. If it is a new bit, we put the name and the
+        # bit on the bus.
+        if (! defined $defwidth{$pinname}) {
+          push @{$defpins{$dir}}, "$pinname";
+        }
+        $defwidth{$pinname} .= $bus;
       }
+    }
+  }
+  close DEF;
+
+  # Once we finish we need to colapse the busses
+  foreach $pinname (keys %defwidth) {
+    $_ = $defwidth{$pinname};
+
+    # If the width is not blank, there is a bus definition.
+    if ($_ ne "") {
+      # We split it and put it in order.
+      @_ = split /,/;
+      @_ = sort { $b <=> $a } @_[1..$#_];
+      $bus = "[$_[0]";
+      $last = $_[0];
+      for $pinno (1..$#_) {
+        if ($_[$pinno] != $last-1) {
+          $bus .= ":$last,$_[$pinno]";
+        }
+        $last = $_[$pinno];
+      }
+      $bus .= ":$last]";
+      $defwidth{$pinname} = $bus;
     }
   }
 }
@@ -210,7 +240,8 @@ if ($netlist ne "") {
           for $pinno ($start..$#_) {
             $pin = $_[$pinno];
             $pin =~ s/[;,] *//;
-            push @{$pins{$inmodule}{$dir}}, "$width$pin";
+            $width{$inmodule}{$pin} = $width;
+            push @{$pins{$inmodule}{$dir}}, "$pin";
           }
         }
         # We store the line
@@ -229,11 +260,7 @@ if ($netlist ne "") {
 sub dumpdefpins {
   local($dir) = @_;
   foreach $pin (@{$defpins{$dir}}) {
-    if ($pin =~ s/(\[.*\])//) {
-      $width = $1;
-    } else {
-      $width = "";
-    }
+    $width = $defwidth{$pin};
     printf "%s %-7s %-20s\n", $dir, $width, $pin;
   }
 }
@@ -241,11 +268,7 @@ sub dumpdefpins {
 sub dumppins {
   local($block, $dir) = @_;
   foreach $pin (@{$pins{$block}{$dir}}) {
-    if ($pin =~ s/(\[.*\])//) {
-      $width = $1;
-    } else {
-      $width = "";
-    }
+    $width = $width{$block}{$pin};
     printf "%s %-7s %-20s\n", $dir, $width, $pin;
   }
 }
