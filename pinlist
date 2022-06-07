@@ -304,10 +304,10 @@ sub compare {
     }
   }
   # Now we flag all cases in the netlist that are not in the DEF.
-  foreach $pinname (@{$width{$block}{$dir}}) {
+  foreach $pinname (@{$pins{$block}{$dir}}) {
     if (! defined $ok{$pinname}) {
       print STDERR
-        "Pin $pinname is not in the DEF file but it is in the netlist.\n";
+        "Pin $pinname is the netlist but not in the DEF file.\n";
     }
   }
 }
