@@ -26,18 +26,18 @@ $progname=~s#.*/##;
 $version = '$Id$' . "\n";
 $usage=
 "usage: $progname [-hV]
-       $progname [-d] -D file.def
-       $progname [-d] [block] file.v\n";
+       $progname [-d] [-D file.def] [block] file.v\n";
 $help="
-This program dumps the pins of a netlist or DEF file. It can also compare two
-lists.
+This program dumps the pins of a block in the netlist or the pins of a DEF file.
+For this one must specify either the netlist file or a def file. If both are
+given then the two pin lists will be compared.
 
 -h     help
 -V     Version
 -d     debug
--D     use def file
-block  block to dump pin file or compare to DEF file. If ommited, the last block
-       will be used.
+-D     specifies the def file
+block  specifies which block of the netlist to use. If ommited it the block will
+       be the last one in the netlist.
 file.v source netlist
 ";
 
@@ -53,7 +53,7 @@ if ($opt_V) {
    printf $version;
    exit 0;
 }
-if ($opt_D eq "" && @ARGV != 2 || $opt_D ne "" && @ARGV != 0 && @ARGV != 2) {
+if ($opt_D eq "" && @ARGV == 0 || @ARGV > 2) {
    die $usage;
 }
 
@@ -61,7 +61,7 @@ if ($opt_D eq "" && @ARGV != 2 || $opt_D ne "" && @ARGV != 0 && @ARGV != 2) {
 # DEF
 if (@ARGV == 1) {
   $block = "";
-  $netlist = $ARGV[1];
+  $netlist = $ARGV[0];
 } else {
   $block = $ARGV[0];
   $netlist = $ARGV[1];
@@ -164,6 +164,7 @@ if ($netlist ne "") {
   # simpler, we dump the comments.
   print STDERR "Building Hierarchy...\n";
   $inmodule = "";
+  $lastmodule = "";
   %module = ();
   %submodules = ();
   while(<NETLIST>) {
@@ -208,6 +209,7 @@ if ($netlist ne "") {
      if ($_[0] eq "module") {
         $inmodule = $_[1];
         $module{$inmodule} .= $_;
+        $lastmodule = $inmodule;
 
      # endmodule will finish the module
      } elsif ($_[0] eq "endmodule") {
@@ -253,6 +255,9 @@ if ($netlist ne "") {
      }
   }
   close NETLIST;
+
+  # We now set the block to the default if it is not already set.
+  $block = $lastmodule if ($block eq "");
 }
 
 ################################################################################
@@ -345,6 +350,5 @@ print "Comparing Outputs...\n";
 compare($block, "o");
 print "Comparing InOuts...\n";
 compare($block, "b");
-
 
 exit 0;
