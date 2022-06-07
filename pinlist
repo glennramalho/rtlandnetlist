@@ -1,12 +1,12 @@
 #!/usr/bin/perl
 ################################################################################
-# Copyright (c) 2022 Glenn Ramalho
+# Copyright (c) 2022 - Glenn Ramalho
 ################################################################################
-# File: netsplit
+# File: pinlist
 # Author: Glenn Ramalho
 ################################################################################
-# Description: Extracts a subtree from a structural netlist with all it's
-#   subcomponents. Does not work with RTL.
+# Description: Extracts a pin list from a DEF file or a netlist block. If both
+#   are given it compares the lists.
 ################################################################################
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -77,6 +77,7 @@ if ($opt_D ne "") {
   print STDERR "Reading DEF...\n";
   while(<DEF>) {
     chomp;
+    s/#.*//;
     s/^\s+//;
     s/\s+$//;
     next if /^$/;
