@@ -74,6 +74,7 @@ if ($opt_D ne "") {
   } else {
     open DEF, $opt_D || die "$progname: $opt_D $!\n";
   }
+  print STDERR "Reading DEF...\n";
   while(<DEF>) {
     chomp;
     s/^\s+//;
@@ -274,7 +275,36 @@ sub dumppins {
 }
 
 sub compare {
-  local($dir) = @_;
+  local($block, $dir) = @_;
+  local(%ok);
+  # We go through all def pins and check each one if it is in the netlist.
+  # If not, we flag it. We also flag cases when the width does not match.
+  foreach $pinname (@{$defpins{$dir}}) {
+    if (grep(/^$pinname$/, @{$pins{$block}{$dir}}) == 0) {
+      print STDERR "Pin $pinname is in the DEF file but not in the netlist.\n";
+    } elsif ($width{$block}{$pinname} ne $defwidth{$pinname}) {
+      $defp = ($defwidth{$pinname} eq "")
+        ? "a plain net":"a $defwidth{$pinname} bus";
+      $netp = ($width{$block}{$pinname} eq "")
+        ? "a plain net":"a $width{$block}{$pinname} bus";
+      printf STDERR
+        "Pin $pinname is %s in the DEF and %s in the netlist.\n", $defp, $netp;
+
+      # And we tag it as found.
+      $ok{$pinname} = 1;
+
+    # Those that match we also tag as found.
+    } else {
+      $ok{$pinname} = 1;
+    }
+  }
+  # Now we flag all cases in the netlist that are not in the DEF.
+  foreach $pinname (@{$width{$block}{$dir}}) {
+    if (! defined $ok{$pinname}) {
+      print STDERR
+        "Pin $pinname is not in the DEF file but it is in the netlist.\n";
+    }
+  }
 }
 
 # If we have a DEF file and no netlist we dump the netlist
@@ -309,9 +339,12 @@ if ($opt_D eq "") {
 ################################################################################
 # Now we should have both, so we can compare the two.
 
-compare("i");
-compare("o");
-compare("b");
+print "Comparing Inputs...\n";
+compare($block, "i");
+print "Comparing Outputs...\n";
+compare($block, "o");
+print "Comparing InOuts...\n";
+compare($block, "b");
 
 
 exit 0;
