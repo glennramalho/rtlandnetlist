@@ -91,7 +91,7 @@ sub expbusses {
    local ($line) = @_;
    local ($bus, $fullbus, @explist, $p, $l, $bit);
 
-   while($line =~ m/([^ \t,]+)\S*\[([\d-]+):([\d-]+)\]/) {
+   while($line =~ m/([^ \t,()]+)\s*\[([\d-]+):([\d-]+)\]/) {
       # We now collect the data in the bus and located the string.
       $bus = $1;
       $left = $2;
@@ -119,7 +119,7 @@ sub exppins {
    local($line) = @_;
    local($bus, $p, $pin, $l, @bus, $i, @flatbus, $newnet);
 
-   while($line =~ m/\.([^ \t]+)\s*\(([^()]*,[^()]*)\)/) {
+   while($line =~ m/\.([^ \t,()]+)\s*\(([^()]*,[^()]*)\)/) {
       print "   * Expanding pin $&\n" if $opt_d;
       # First we locate the string in the $_.
       $fullbus = $&;
@@ -138,11 +138,11 @@ sub exppins {
       # We now make a new pin for each entry.
       @flatbus = ();
       for ($i = 0; $i <= $#bus; $i = $i + 1) {
-         push @flatbus, "$pin<" . ($#bus - $i) . "> (" . $bus[$i] . ")";
+         push @flatbus, ".$pin<" . ($#bus - $i) . "> (" . $bus[$i] . ")";
       }
 
       # Now we bring in the flatten bus in.
-      $newnet = "." . join ", ", @flatbus;
+      $newnet = join ", ", @flatbus;
       print "   * Expanded to $newnet\n" if $opt_d;
       substr $line, $p, $l, $newnet;
    }
@@ -213,19 +213,6 @@ while(<FILE>) {
    # We no longer need the semicolon.
    s/\s*;$//;
 
-   # We need to flatten busses or we will go crazy, but we do not do this to
-   # wire declarations.
-#   unless (/^input/ || /^output/ || /^inout/) {
-#      # First we flatten the regular busses.
-#      $line = expbusses($_);
-#
-#      # And we get rid of the single bit ones too.
-#      $line =~ s/\[(\d+)\]/<$1>/g;
-#
-#      print ("expanded: ", $line, "\n") if ($_ ne $line && $opt_d);
-#      $_ = $line;
-#   }
-
    # Once we hit here we can split the line.
    @_ = split /[, \t]+/;
 
@@ -264,10 +251,17 @@ while(<FILE>) {
 
    # If it is a module we need the module name
    if ($_[0] eq "module") {
+      # We get the module and the pins
       $module = $_[1];
       @pins = @_[3..$#_-1];
       print "* Found module $module has pins ", join(", ", @pins), "\n"
             if $opt_d;
+
+      # We blank out the left and right lists.
+      %left = {};
+      %right = {};
+
+      # And we tag that we are doing a new module.
       $modstarted = 1;
 
    # If we see an instance, we build an instance block. It is quite similar
@@ -301,7 +295,6 @@ while(<FILE>) {
       # We first collect the busses.
       $oldline = $_;
       @pins = m/\.[^ \t,()]+\s*\([^()]+\)/g;
-      print "* Line has ", @pins, "\n";
       for $pin (@pins) {
          # We mark it
          $pin =~ m/(.*)\((.*)\)/;
@@ -334,10 +327,13 @@ while(<FILE>) {
          
          # And we bring the new list in
          $newline = "$pinname(" . join(", ",@bits) . ")";
-         printf "   * pinline = $pinbus\n";
-         printf "   * pinnew = $newline\n";
          substr $_, $p, $l, $newline;
       }
+      print "* zef $_\n" if $oldline ne $_ && $opt_d;
+
+      # We need to expand any explicit busses.
+      $_ = expbusses($_);
+      print "* kal: $_\n" if $oldline ne $_ && $opt_d;
 
       # Now we look for .pin(a, b, c) and replace it with .pin<2>(a),
       # .pin<1>(b), .pin<0>(c).
