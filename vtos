@@ -97,8 +97,8 @@ sub expbusses {
       $left = $2;
       $right = $3;
       $fullbus = $&;
-      $p = index($line, $&);
-      $l = length($fullbus);
+      $p = index $line, $&;
+      $l = length $fullbus;
 
       # Now we build a list of expanded entries.
       @explist = ();
@@ -108,7 +108,7 @@ sub expbusses {
 
       # We join it into a comma separated strings and insert it back into
       # the string.
-      $expbus = join ",", @explist;
+      $expbus = join ", ", @explist;
       substr($line, $p, $l, $expbus);
    }
 
@@ -117,30 +117,34 @@ sub expbusses {
 
 sub exppins {
    local($line) = @_;
-   local($bus, $p, $pin, $l, @bus, $i, @flatbus);
+   local($bus, $p, $pin, $l, @bus, $i, @flatbus, $newnet);
 
    while($line =~ m/\.([^ \t]+)\s*\(([^()]*,[^()]*)\)/) {
+      print "   * Expanding pin $&\n" if $opt_d;
       # First we locate the string in the $_.
       $fullbus = $&;
       $pin = $1;
       $bus = $2;
-      $p = index($line, $fullbus); 
-      $l = length($fullbus);
+      $p = index $line, $fullbus; 
+      $l = length $fullbus;
 
       # Now we remove the concatenation brackets and extract the bus elements
       $bus =~ s/{//;
       $bus =~ s/}//;
-      $bus =~ s/^[ \t]+//;
-      $bus =~ s/[ \t]+$//;
+      $bus =~ s/^\s+//;
+      $bus =~ s/\s+$//;
       @bus = split /[ \t]*,[ \t]*/, $bus;
 
       # We now make a new pin for each entry.
+      @flatbus = ();
       for ($i = 0; $i <= $#bus; $i = $i + 1) {
-         push @flatbus, "$pin<" . $i . "> (" . $bus[$i] . ")";
+         push @flatbus, "$pin<" . ($#bus - $i) . "> (" . $bus[$i] . ")";
       }
 
       # Now we bring in the flatten bus in.
-      substr($line, $p, $l, join(",", @flatbus));
+      $newnet = "." . join ", ", @flatbus;
+      print "   * Expanded to $newnet\n" if $opt_d;
+      substr $line, $p, $l, $newnet;
    }
 
    $line;
@@ -149,7 +153,7 @@ sub exppins {
 # We first read in the model, if any.
 if ($opt_S) {
    print "* Reading the spice model $opt_S\n";
-   open FILE, "$opt_S" || die "$progname: $opt_S: $!\n";
+   open (FILE, "$opt_S") || die "$progname: $opt_S: $!\n";
    while(<FILE>) {
       s/[;*].*//;
       s/^\s+//;
@@ -168,20 +172,22 @@ if ($opt_S) {
    }
    close FILE;
 }
-# If the file ends in .gz it must be gzipped. We unzip it and read it then.
-if ($ARGV[0] =~ m/\.gz$/) {
-   open FILE, "gunzip -c $ARGV[0]|" || die "$progname: $ARGV[0]: $!\n";
-} else {
-   open FILE, $ARGV[0] || die "$progname: $ARGV[0]: $!\n";
-}
 
 if ($opt_G) {
    @globals = split /[ \t]*,[ \t]*/, $opt_G;
    foreach $g (@globals) {
       $globals{$g} = 1;
    }
-   print "* Using globals ", join(",", @globals), "\n" if $opt_d;
+   print "* Using globals ", join(", ", @globals), "\n" if $opt_d;
 }
+
+# If the file ends in .gz it must be gzipped. We unzip it and read it then.
+if ($ARGV[0] =~ m/\.gz$/) {
+   open (FILE, "gunzip -c $ARGV[0]|") || die "$progname: $ARGV[0]: $!\n";
+} else {
+   open (FILE, $ARGV[0]) || die "$progname: $ARGV[0]: $!\n";
+}
+
 print "* Reading netlist $ARGV[0]\n";
 $unc = 0;
 $modstarted = 0;
@@ -209,19 +215,16 @@ while(<FILE>) {
 
    # We need to flatten busses or we will go crazy, but we do not do this to
    # wire declarations.
-   unless (/^input/ || /^output/ || /^inout/) {
-      # First we flatten the regular busses.
-      $oline = $_;
-      $line = expbusses($_);
-
-      # And we get rid of the single bit ones too.
-      $line =~ s/\[(\d+)\]/<$1>/g;
-
-      # Now we look for the .pin(bus) so we can expand them too. We hunt for
-      # cases where we have a bus in a pin and we flatten it.
-      $line = exppins($line);
-      $_ = $line;
-   }
+#   unless (/^input/ || /^output/ || /^inout/) {
+#      # First we flatten the regular busses.
+#      $line = expbusses($_);
+#
+#      # And we get rid of the single bit ones too.
+#      $line =~ s/\[(\d+)\]/<$1>/g;
+#
+#      print ("expanded: ", $line, "\n") if ($_ ne $line && $opt_d);
+#      $_ = $line;
+#   }
 
    # Once we hit here we can split the line.
    @_ = split /[, \t]+/;
@@ -242,7 +245,11 @@ while(<FILE>) {
 
       if ($left ne "") {
          for $pin (@_[2..$#_]) {
-            print "* Found pin bus $module.$pin -> $left:$right\n" if $opt_d;
+            if ($opt_d && $_[0] eq "wire") {
+               print "* Found wire bus $module.$pin -> $left:$right\n";
+            } else {
+               print "* Found pin bus $module.$pin -> $left:$right\n";
+            }
             $left{$pin} = $left;
             $right{$pin} = $right;
          }
@@ -251,7 +258,7 @@ while(<FILE>) {
    }
 
    # We have no special treatment for the supplies. We also can ditch the wires.
-   if ($_[0] eq "supply0" || $_[0] eq "supply1") {
+   if ($_[0] eq "supply0" || $_[0] eq "supply1" || $_[0] eq "wire") {
       next;
    }
 
@@ -259,7 +266,7 @@ while(<FILE>) {
    if ($_[0] eq "module") {
       $module = $_[1];
       @pins = @_[3..$#_-1];
-      print "* Found module $module has pins ", join(",", @pins), "\n"
+      print "* Found module $module has pins ", join(", ", @pins), "\n"
             if $opt_d;
       $modstarted = 1;
 
@@ -278,7 +285,6 @@ while(<FILE>) {
                push @epins, "$pin<$left{$pin}>";
             } else {
                $pinlist = expbusses($pin . "[$left{$pin}:$right{$pin}]");
-               print " to $pinlist\n";
                push @epins, split /,/, $pinlist;
             }
          }
@@ -291,6 +297,52 @@ while(<FILE>) {
 
       $block = $_[0];
       $inst = $_[1];
+
+      # We first collect the busses.
+      $oldline = $_;
+      @pins = m/\.[^ \t,()]+\s*\([^()]+\)/g;
+      print "* Line has ", @pins, "\n";
+      for $pin (@pins) {
+         # We mark it
+         $pin =~ m/(.*)\((.*)\)/;
+         $pinname = $1;
+         $pinbus = $2;
+         $p = index $_, $pin;
+         $l = length $pin;
+         
+         # We remove any concatenation keys
+         $pinbus =~ s/{//g;
+         $pinbus =~ s/}//g;
+         $pinbus =~ s/^\s+//g;
+         $pinbus =~ s/\s+$//g;
+
+         # We now scan it looking for unexpanded busses.
+         @bus = split /[ \t]*,[ \t]*/, $pinbus;
+         print "* Checking pin $pinname, pinbus=$pinbus has #" . (@bus +0) . " nets\n" if $opt_d;
+         @bits = ();
+         for $bit (@bus) {
+            print "  * Checking bit $bit - $left{$bit} - $right{$bit}\n" if $opt_d;
+            if (!defined $left{$bit}) {
+               push @bits, $bit;
+            } elsif (defined $left{$bit} && $left{$bit} == $right{$bit}) {
+               push @bits, $bit . "<" . $left{$bit} . ">";
+            } else {
+               $bitlist = expbusses($bit . "[$left{$bit}:$right{$bit}]");
+               push @bits, split /,/, $bitlist;
+            }
+         }
+         
+         # And we bring the new list in
+         $newline = "$pinname(" . join(", ",@bits) . ")";
+         printf "   * pinline = $pinbus\n";
+         printf "   * pinnew = $newline\n";
+         substr $_, $p, $l, $newline;
+      }
+
+      # Now we look for .pin(a, b, c) and replace it with .pin<2>(a),
+      # .pin<1>(b), .pin<0>(c).
+      $_ = exppins($_);
+      print "* was: $oldline\n* now: $_\n" if $oldline ne $_ && $opt_d;
 
       # If the device has no pins, it can't be too complex, it must be missing.
       # So we just print a warning and skip it.
