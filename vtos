@@ -311,10 +311,8 @@ while(<FILE>) {
 
          # We now scan it looking for unexpanded busses.
          @bus = split /[ \t]*,[ \t]*/, $pinbus;
-         print "* Checking pin $pinname, pinbus=$pinbus has #" . (@bus +0) . " nets\n" if $opt_d;
          @bits = ();
          for $bit (@bus) {
-            print "  * Checking bit $bit - $left{$bit} - $right{$bit}\n" if $opt_d;
             if (!defined $left{$bit}) {
                push @bits, $bit;
             } elsif (defined $left{$bit} && $left{$bit} == $right{$bit}) {
@@ -329,11 +327,9 @@ while(<FILE>) {
          $newline = "$pinname(" . join(", ",@bits) . ")";
          substr $_, $p, $l, $newline;
       }
-      print "* zef $_\n" if $oldline ne $_ && $opt_d;
 
       # We need to expand any explicit busses.
       $_ = expbusses($_);
-      print "* kal: $_\n" if $oldline ne $_ && $opt_d;
 
       # Now we look for .pin(a, b, c) and replace it with .pin<2>(a),
       # .pin<1>(b), .pin<0>(c).
