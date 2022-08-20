@@ -1,0 +1,325 @@
+#!/usr/bin/perl
+################################################################################
+# Copyright (c) 2019 Glenn Ramalho
+################################################################################
+# File: hierinstcnt
+# Author: Glenn Ramalho
+################################################################################
+# Description: This script attempts to print a hierarchy of a structural verilog
+#   netlist with some basic metrics.
+################################################################################
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+
+$progname=$0;
+$progname=~s#.*/##;
+$version = '$Id$' . "\n";
+$usage=
+"usage: $progname [-hV]
+$progname [-d] [-S spicemod] [-G globals] netlist.v[.gz]";
+$help="
+This program prints the cells in a Verilog netlist and how many times each is
+instantiated in the hierarchy.
+
+-h     help
+-V     Version
+-d     debug
+-G     Connect globals to nets: '-G VDD,VSS'
+-S     Declares a spice model file to read
+";
+
+use Getopt::Std;
+getopts('hVdG:S:') || die $usage;
+
+if ($opt_h) {
+   printf $usage;
+   printf $help;
+   exit 0;
+}
+if ($opt_V) {
+   printf $version;
+   exit 0;
+}
+if (@ARGV != 1) {
+   die $usage;
+}
+
+$module = "";
+sub nl {
+  local ($nl) = @_;
+  chomp $nl;
+  $nl =~ s/\(\*.*\*\)//;
+  $nl =~ s#//.*##;
+  $nl =~ s/^[  ]+//;
+  $nl =~ s/[  ]$//;
+  $nl =~ s/\(/ ( /;
+  $nl =~ s/\)/ ) /;
+
+  $nl;
+}
+
+sub fmt {
+   local (@w) = @_;
+   local ($i, $l, $line);
+
+   $l = length($w[0]);
+   $line = $w[0];
+   foreach $_ (@w[1..$#w]) {
+      $l = $l + length($_) + 1;
+      if ($l > 78) {
+         print $line, " \\\n";
+         $line = "   $_";
+         $l = length($line);
+      } else {
+         $line = $line . " $_";
+      }
+   }
+   print $line, "\n";
+}
+
+sub expbusses {
+   local ($line) = @_;
+   local ($bus, $fullbus, @explist, $p, $l, $bit);
+
+   while($line =~ m/([^ \t,]+)\S*\[([\d-]+):([\d-]+)\]/) {
+      # We now collect the data in the bus and located the string.
+      $bus = $1;
+      $left = $2;
+      $right = $3;
+      $fullbus = $&;
+      $p = index($line, $&);
+      $l = length($fullbus);
+
+      # Now we build a list of expanded entries.
+      @explist = ();
+      for ($bit = $left; $bit >= $right; $bit = $bit - 1) {
+         push @explist, "$bus<$bit>";
+      }
+
+      # We join it into a comma separated strings and insert it back into
+      # the string.
+      $expbus = join ",", @explist;
+      substr($line, $p, $l, $expbus);
+   }
+
+   $line;
+}
+
+sub exppins {
+   local($line) = @_;
+   local($bus, $p, $pin, $l, @bus, $i, @flatbus);
+
+   while($line =~ m/\.([^ \t]+)\s*\(([^()]*,[^()]*)\)/) {
+      # First we locate the string in the $_.
+      $fullbus = $&;
+      $pin = $1;
+      $bus = $2;
+      $p = index($line, $fullbus); 
+      $l = length($fullbus);
+
+      # Now we remove the concatenation brackets and extract the bus elements
+      $bus =~ s/{//;
+      $bus =~ s/}//;
+      $bus =~ s/^[ \t]+//;
+      $bus =~ s/[ \t]+$//;
+      @bus = split /[ \t]*,[ \t]*/, $bus;
+
+      # We now make a new pin for each entry.
+      for ($i = 0; $i <= $#bus; $i = $i + 1) {
+         push @flatbus, "$pin<" . $i . "> (" . $bus[$i] . ")";
+      }
+
+      # Now we bring in the flatten bus in.
+      substr($line, $p, $l, join(",", @flatbus));
+   }
+
+   $line;
+}
+
+# We first read in the model, if any.
+if ($opt_S) {
+   print "* Reading the spice model $opt_S\n";
+   open FILE, "$opt_S" || die "$progname: $opt_S: $!\n";
+   while(<FILE>) {
+      s/[;*].*//;
+      s/^\s+//;
+      s/\s+$//;
+      next if m/^$/;
+      @_ = split /[, \t]+/;
+
+      if (lc($_[0]) eq ".subckt") {
+         split /[ \t]+/;
+         $subckt = $_[1];
+         @{$pins{$subckt}} = @_[2..$#_];
+         if ($opt_d) {
+            print "* Found SUBCKT $_[1]\n";
+         }
+      }
+   }
+   close FILE;
+}
+# If the file ends in .gz it must be gzipped. We unzip it and read it then.
+if ($ARGV[0] =~ m/\.gz$/) {
+   open FILE, "gunzip -c $ARGV[0]|" || die "$progname: $ARGV[0]: $!\n";
+} else {
+   open FILE, $ARGV[0] || die "$progname: $ARGV[0]: $!\n";
+}
+
+if ($opt_G) {
+   @globals = split /[ \t]*,[ \t]*/, $opt_G;
+   foreach $g (@globals) {
+      $globals{$g} = 1;
+   }
+   print "* Using globals ", join(",", @globals), "\n" if $opt_d;
+}
+print "* Reading netlist $ARGV[0]\n";
+$unc = 0;
+$modstarted = 0;
+while(<FILE>) {
+   # Remove whitespace
+   $_ = nl($_);
+   next if m/^$/;
+   last if m/`ifdef/;
+
+   # When we find the endmodule we close the subckt.
+   if (/endmodule/) {
+      print "ends $module\n";
+      $module = ""; 
+      next;
+   }
+
+   # If a line does not end in a semicolon, we merge it with the next line.
+   # We need to stop if we hit the end of file.
+   while ($_ !~ /;$/ && ! eof(FILE) ) {
+      $_ = nl($_ . <FILE>);
+   }
+
+   # We no longer need the semicolon.
+   s/\s*;$//;
+
+   # We need to flatten busses or we will go crazy, but we do not do this to
+   # wire declarations.
+   unless (/^input/ || /^output/ || /^inout/) {
+      # First we flatten the regular busses.
+      $oline = $_;
+      $line = expbusses($_);
+
+      # And we get rid of the single bit ones too.
+      $line =~ s/\[(\d+)\]/<$1>/g;
+
+      # Now we look for the .pin(bus) so we can expand them too. We hunt for
+      # cases where we have a bus in a pin and we flatten it.
+      $line = exppins($line);
+      $_ = $line;
+   }
+
+   # Once we hit here we can split the line.
+   @_ = split /[, \t]+/;
+
+   # Any line with a pin or wire keyword we capture to know if it is a bus
+   if ($_[0] eq "input" || $_[0] eq "output" || $_[0] eq "inout" ||
+         $_[0] eq "wire") {
+      if ($_[1] =~ /\[(.*):(.*)\]/) {
+         $left = $1;
+         $right = $2;
+      } elsif ($_[1] =~ /\[(.*)\]/) {
+         $left = $1;
+         $right = $1;
+      } else {
+         $left = "";
+         $right = "";
+      }
+
+      if ($left ne "") {
+         for $pin (@_[2..$#_]) {
+            print "* Found pin bus $module.$pin -> $left:$right\n" if $opt_d;
+            $left{$pin} = $left;
+            $right{$pin} = $right;
+         }
+      }
+      next;
+   }
+
+   # We have no special treatment for the supplies. We also can ditch the wires.
+   if ($_[0] eq "supply0" || $_[0] eq "supply1") {
+      next;
+   }
+
+   # If it is a module we need the module name
+   if ($_[0] eq "module") {
+      $module = $_[1];
+      @pins = @_[3..$#_-1];
+      print "* Found module $module has pins ", join(",", @pins), "\n"
+            if $opt_d;
+      $modstarted = 1;
+
+   # If we see an instance, we build an instance block. It is quite similar
+   # to the verilog one, just the arguments change a bit.
+   } else {
+      # If this is the first line after the pins, we need to expand any busses
+      # in the pinlist first.
+      if ($modstarted) {
+         @epins = ();
+         for($i = 0; $i <= $#pins; $i = $i + 1) {
+            $pin = $pins[$i];
+            if (! defined $left{$pin}) {
+               push @epins, $pin;
+            } elsif ($left{$pins} == $right{$pin}) {
+               push @epins, "$pin<$left{$pin}>";
+            } else {
+               $pinlist = expbusses($pin . "[$left{$pin}:$right{$pin}]");
+               print " to $pinlist\n";
+               push @epins, split /,/, $pinlist;
+            }
+         }
+
+         @{$pins{$module}} = @epins;
+         fmt "subckt", $module, @{$pins{$module}};
+
+         $modstarted = 0;
+      }
+
+      $block = $_[0];
+      $inst = $_[1];
+
+      # If the device has no pins, it can't be too complex, it must be missing.
+      # So we just print a warning and skip it.
+      if (! defined $pins{$block}) {
+         print "* block $block inst $inst not found\n";
+         next;
+      }
+
+      # We need to rearrange the pins into the order that they are in the
+      # device.
+      @pins = ();
+      foreach $pin (@{$pins{$block}}) {
+         # For every pin we find, we need to know where it is located in the
+         # instance as Spice does not support connect-by-name.
+         if ($_ =~ m/\.$pin\s*\(([^()]*)\)/) {
+            $net = $1;
+            $net =~ s/^\s+//;
+            $net =~ s/\s+$//;
+         } elsif (defined $globals{$pin}) {
+            $net = $pin;
+         } else {
+            $net = "UNCON_$unc";
+            $unc = $unc + 1;
+         }
+         push @pins, $net;
+         print "* Connected Pin $pin<$block> to net $net\n" if $opt_d;
+      }
+      
+      fmt $block, @pins, $inst;
+   }
+}
+close FILE;
