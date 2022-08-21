@@ -88,6 +88,31 @@ sub nl {
 }
 
 ###################
+# sub patchout
+# inputs: line to patch
+# outputs: patched line
+#
+# patches a line with some simple rules
+#
+sub patchout {
+   local(@l) = @_;
+   if (${opt_S}) {
+      $line =~ s/</__/g;
+      $line =~ s/>/__/g;
+      $line =~ s/\[/__/g;
+      $line =~ s/\]/__/g;
+   } else {
+      $line =~ s/</\\</g;
+      $line =~ s/>/\\>/g;
+      $line =~ s/\[/\\</g;
+      $line =~ s/\]/\\>/g;
+   }
+   $line =~ s/-/m/g;
+
+   $line;
+}
+   
+###################
 # Sub fmt
 # inputs: line to print
 # outputs: none
@@ -105,16 +130,12 @@ sub fmt {
    foreach $_ (@w[1..$#w]) {
       $l = $l + length($_) + 1;
       if ($l > 78) {
-         $line =~ s/\[/</g;
-         $line =~ s/\]/>/g;
-         $line =~ s/-/m/g;
-
          # The continuation character depends on the output format.
          if ($opt_S) {
-            print OUT $line, "\n";
+            print OUT patchout($line), "\n";
             $line = "+  $_";
          } else {
-            print OUT $line, " \\\n";
+            print OUT patchout($line), " \\\n";
             $line = "   $_";
          }
          $l = length($line);
@@ -122,10 +143,7 @@ sub fmt {
          $line = $line . " $_";
       }
    }
-   $line =~ s/\[/</g;
-   $line =~ s/\]/>/g;
-   $line =~ s/-/m/g;
-   print OUT $line, "\n";
+   print OUT patchout($line), "\n";
 }
 
 ###################
@@ -494,7 +512,11 @@ while(<NET>) {
       
       # And we can generate the instance. Note that in spice format all
       # subcircuits must begin with an X.
-      fmt ((($opt_S) ? "X" . $inst : $inst), @pins, $block);
+      if ($opt_S) {
+         fmt "X" . $inst, @pins, $block;
+      } else {
+         fmt $inst, "(", @pins, ")", $block;
+      }
    }
 }
 
