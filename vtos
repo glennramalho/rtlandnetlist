@@ -116,10 +116,11 @@ sub expbusses {
 }
 
 sub exppins {
-   local($line) = @_;
+   local($module,$line) = @_;
    local($bus, $p, $pin, $l, @bus, $i, @flatbus, $newnet);
 
-   while($line =~ m/\.([^ \t,()]+)\s*\(([^()]*,[^()]*)\)/) {
+   while($line =~ m/\.([^ \t,()]+)\s*\(([^()]*,[^()]*)\)/
+         || $line =~ m/\.([^ \t,()]+)\s*\(\s*\{[^()]*\}\s*\)/) {
       print "   * Expanding pin $&\n" if $opt_d;
       # First we locate the string in the $_.
       $fullbus = $&;
@@ -135,10 +136,19 @@ sub exppins {
       $bus =~ s/\s+$//;
       @bus = split /[ \t]*,[ \t]*/, $bus;
 
+      # Now we find the left for the pin.
+      if (! defined $left{$module,$pin} ) {
+         $left = $#bus;
+         print "  * Using guess ($pin) left = $left\n";
+      } else {
+         $left = $left{$module,$pin};
+         print "  * Using $pin left = $left\n";
+      }
+
       # We now make a new pin for each entry.
       @flatbus = ();
       for ($i = 0; $i <= $#bus; $i = $i + 1) {
-         push @flatbus, ".$pin<" . ($#bus - $i) . "> (" . $bus[$i] . ")";
+         push @flatbus, ".$pin<" . ($left - $i) . "> (" . $bus[$i] . ")";
       }
 
       # Now we bring in the flatten bus in.
@@ -237,8 +247,8 @@ while(<FILE>) {
             } else {
                print "* Found pin bus $module.$pin -> $left:$right\n";
             }
-            $left{$pin} = $left;
-            $right{$pin} = $right;
+            $left{$module,$pin} = $left;
+            $right{$module,$pin} = $right;
          }
       }
       next;
@@ -257,10 +267,6 @@ while(<FILE>) {
       print "* Found module $module has pins ", join(", ", @pins), "\n"
             if $opt_d;
 
-      # We blank out the left and right lists.
-      %left = {};
-      %right = {};
-
       # And we tag that we are doing a new module.
       $modstarted = 1;
 
@@ -273,13 +279,13 @@ while(<FILE>) {
          @epins = ();
          for($i = 0; $i <= $#pins; $i = $i + 1) {
             $pin = $pins[$i];
-            if (! defined $left{$pin}) {
+            if (! defined $left{$module,$pin}) {
                push @epins, $pin;
-            } elsif ($left{$pins} == $right{$pin}) {
-               push @epins, "$pin<$left{$pin}>";
+            } elsif ($left{$module,$pins} == $right{$module,$pin}) {
+               push @epins, "$pin<$left{$module,$pin}>";
             } else {
-               $pinlist = expbusses($pin . "[$left{$pin}:$right{$pin}]");
-               push @epins, split /,/, $pinlist;
+               $pinlist = expbusses($pin . "[$left{$module,$pin}:$right{$module,$pin}]");
+               push @epins, split / *, */, $pinlist;
             }
          }
 
@@ -313,12 +319,12 @@ while(<FILE>) {
          @bus = split /[ \t]*,[ \t]*/, $pinbus;
          @bits = ();
          for $bit (@bus) {
-            if (!defined $left{$bit}) {
+            if (!defined $left{$block,$bit}) {
                push @bits, $bit;
-            } elsif (defined $left{$bit} && $left{$bit} == $right{$bit}) {
-               push @bits, $bit . "<" . $left{$bit} . ">";
+            } elsif (defined $left{$block,$bit} && $left{$block,$bit} == $right{$block,$bit}) {
+               push @bits, $bit . "<" . $left{$block,$bit} . ">";
             } else {
-               $bitlist = expbusses($bit . "[$left{$bit}:$right{$bit}]");
+               $bitlist = expbusses($bit . "[$left{$block,$bit}:$right{$block,$bit}]");
                push @bits, split /,/, $bitlist;
             }
          }
@@ -333,7 +339,7 @@ while(<FILE>) {
 
       # Now we look for .pin(a, b, c) and replace it with .pin<2>(a),
       # .pin<1>(b), .pin<0>(c).
-      $_ = exppins($_);
+      $_ = exppins($block,$_);
       print "* was: $oldline\n* now: $_\n" if $oldline ne $_ && $opt_d;
 
       # If the device has no pins, it can't be too complex, it must be missing.
@@ -347,9 +353,16 @@ while(<FILE>) {
       # device.
       @pins = ();
       foreach $pin (@{$pins{$block}}) {
+         # Single bit inputs do not need to have the bus mentioned.
+         $nobus = $pin;
+         $nobus =~ s/<[\d-]+>//;
          # For every pin we find, we need to know where it is located in the
          # instance as Spice does not support connect-by-name.
          if ($_ =~ m/\.$pin\s*\(([^()]*)\)/) {
+            $net = $1;
+            $net =~ s/^\s+//;
+            $net =~ s/\s+$//;
+         } elsif ($_ =~ m/\.$nobus\s*\(([^()]*)\)/) {
             $net = $1;
             $net =~ s/^\s+//;
             $net =~ s/\s+$//;
