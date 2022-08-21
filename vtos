@@ -1,12 +1,12 @@
 #!/usr/bin/perl
 ################################################################################
-# Copyright (c) 2019 Glenn Ramalho
+# Copyright (c) 2022 Glenn Ramalho
 ################################################################################
-# File: hierinstcnt
+# File: vtos
 # Author: Glenn Ramalho
 ################################################################################
-# Description: This script attempts to print a hierarchy of a structural verilog
-#   netlist with some basic metrics.
+# Description: This script converts a Structural verilog netlist into a spice
+#   or spectre netlist.
 ################################################################################
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,20 +26,24 @@ $progname=~s#.*/##;
 $version = '$Id$' . "\n";
 $usage=
 "usage: $progname [-hV]
-$progname [-d] [-S spicemod] [-G globals] netlist.v[.gz]";
+       $progname [-dS] [-G globals] -i netlist.v[.gz] -o out.net [models ...]
+";
 $help="
-This program prints the cells in a Verilog netlist and how many times each is
-instantiated in the hierarchy.
+This program converts a structural Verilog netlist into a Spice or Spectre
+netlist.
 
 -h     help
 -V     Version
 -d     debug
 -G     Connect globals to nets: '-G VDD,VSS'
--S     Declares a spice model file to read
+-i     netlist input, cam be compressed.
+-o     output converted file, can't be the same as the input
+-S     Use spice format. Default is spectre format.
+models models to extract the pin order of library cells
 ";
 
 use Getopt::Std;
-getopts('hVdG:S:') || die $usage;
+getopts('hVdG:Si:o:') || die $usage . "\n";
 
 if ($opt_h) {
    printf $usage;
@@ -50,11 +54,25 @@ if ($opt_V) {
    printf $version;
    exit 0;
 }
-if (@ARGV != 1) {
-   die $usage;
+if (!$opt_i || !$opt_o) {
+   warn "$progname: the -i and -o options are necessary.\n";
+   die $usage . "\n";
+}
+if ($opt_i eq $opt_o) {
+   warn "$progname: the -i and -o must not be the same.\n";
+   die $usage . "\n";
 }
 
-$module = "";
+###################
+# Sub nl
+# inputs: line to clean
+# outputs: returns the processed line
+# globals: none
+#
+# Takes a verilog netlist line and strips comments, configuration and white
+# spaces. Also adds space before and after the parenthesis to make it easier
+# to parse.
+#
 sub nl {
   local ($nl) = @_;
   chomp $nl;
@@ -68,6 +86,15 @@ sub nl {
   $nl;
 }
 
+###################
+# Sub fmt
+# inputs: line to print
+# outputs: none
+# globals: OUT, $opt_S
+#
+# Prints a line reformatting it to fit in 78 columns. It will break the line.
+# It also elimitates illegal characters in the process.
+#
 sub fmt {
    local (@w) = @_;
    local ($i, $l, $line);
@@ -77,16 +104,38 @@ sub fmt {
    foreach $_ (@w[1..$#w]) {
       $l = $l + length($_) + 1;
       if ($l > 78) {
-         print $line, " \\\n";
-         $line = "   $_";
+         $line =~ s/\[/</g;
+         $line =~ s/\]/>/g;
+         $line =~ s/-/m/g;
+
+         # The continuation character depends on the output format.
+         if ($opt_S) {
+            print OUT $line, "\n";
+            $line = "+  $_";
+         } else {
+            print OUT $line, " \\\n";
+            $line = "   $_";
+         }
          $l = length($line);
       } else {
          $line = $line . " $_";
       }
    }
-   print $line, "\n";
+   $line =~ s/\[/</g;
+   $line =~ s/\]/>/g;
+   $line =~ s/-/m/g;
+   print OUT $line, "\n";
 }
 
+###################
+# Sub expbusses
+# inputs: line with busses to expand
+# outputs: expanded line
+# globals: none
+#
+# Finds verilog bus vectors with [] and expands them into individual bits.
+# V[5:3] becomes V[5], V[4], V[3]
+#
 sub expbusses {
    local ($line) = @_;
    local ($bus, $fullbus, @explist, $p, $l, $bit);
@@ -115,13 +164,22 @@ sub expbusses {
    $line;
 }
 
+###################
+# Sub exppins
+# inputs: line with pins to expand
+# outputs: expanded line
+# globals: $opt_d, OUT, %left and %right
+#
+# Replaces pin connections in the format .pin ( { a, b, c} ) with .pin<2>(a),
+# .pin<1>(b), .pin<0>(c).
+#
 sub exppins {
    local($module,$line) = @_;
    local($bus, $p, $pin, $l, @bus, $i, @flatbus, $newnet);
 
    while($line =~ m/\.([^ \t,()]+)\s*\(([^()]*,[^()]*)\)/
          || $line =~ m/\.([^ \t,()]+)\s*\(\s*\{[^()]*\}\s*\)/) {
-      print "   * Expanding pin $&\n" if $opt_d;
+      print OUT "   * Expanding pin $&\n" if $opt_d;
       # First we locate the string in the $_.
       $fullbus = $&;
       $pin = $1;
@@ -139,10 +197,10 @@ sub exppins {
       # Now we find the left for the pin.
       if (! defined $left{$module,$pin} ) {
          $left = $#bus;
-         print "  * Using guess ($pin) left = $left\n";
+         print OUT "  * Using guess ($pin) left = $left\n" if $opt_d;
       } else {
          $left = $left{$module,$pin};
-         print "  * Using $pin left = $left\n";
+         print OUT "  * Using $pin left = $left\n" if $opt_d;
       }
 
       # We now make a new pin for each entry.
@@ -153,17 +211,30 @@ sub exppins {
 
       # Now we bring in the flatten bus in.
       $newnet = join ", ", @flatbus;
-      print "   * Expanded to $newnet\n" if $opt_d;
+      print OUT "   * Expanded to $newnet\n" if $opt_d;
       substr $line, $p, $l, $newnet;
    }
 
    $line;
 }
 
-# We first read in the model, if any.
-if ($opt_S) {
-   print "* Reading the spice model $opt_S\n";
-   open (FILE, "$opt_S") || die "$progname: $opt_S: $!\n";
+################################################################################
+# We first open the netlist. If the file ends in .gz it must be gzipped. We
+# unzip it and read it then.
+if ($opt_i =~ m/\.gz$/) {
+   open (NET, "gunzip -c $opt_i|") || die "$progname: $opt_i: $!\n";
+} else {
+   open (NET, $opt_i) || die "$progname: $opt_i: $!\n";
+}
+
+# Now we open the output file.
+open OUT, ">$opt_o" || die "$progname: open $opt_o: $!\n";
+
+# We read any models that may be on the end.
+for $model (@ARGV) {
+   print "* Reading the spice model $model\n";
+   print OUT "* Reading the spice model $model\n";
+   open (FILE, "$model") || die "$progname: $model: $!\n";
    while(<FILE>) {
       s/[;*].*//;
       s/^\s+//;
@@ -176,32 +247,29 @@ if ($opt_S) {
          $subckt = $_[1];
          @{$pins{$subckt}} = @_[2..$#_];
          if ($opt_d) {
-            print "* Found SUBCKT $_[1]\n";
+            print OUT "* Found SUBCKT $_[1]\n";
          }
       }
    }
    close FILE;
 }
 
+# The globals, if any, are in opt_G.
 if ($opt_G) {
    @globals = split /[ \t]*,[ \t]*/, $opt_G;
    foreach $g (@globals) {
       $globals{$g} = 1;
    }
-   print "* Using globals ", join(", ", @globals), "\n" if $opt_d;
+   print "* Using globals ", join(", ", @globals), "\n";
+   print OUT "* Using globals ", join(", ", @globals), "\n";
 }
 
-# If the file ends in .gz it must be gzipped. We unzip it and read it then.
-if ($ARGV[0] =~ m/\.gz$/) {
-   open (FILE, "gunzip -c $ARGV[0]|") || die "$progname: $ARGV[0]: $!\n";
-} else {
-   open (FILE, $ARGV[0]) || die "$progname: $ARGV[0]: $!\n";
-}
-
-print "* Reading netlist $ARGV[0]\n";
+# And we are ready to process the netlist.
+print "* Reading netlist $opt_i\n";
 $unc = 0;
 $modstarted = 0;
-while(<FILE>) {
+$module = "";
+while(<NET>) {
    # Remove whitespace
    $_ = nl($_);
    next if m/^$/;
@@ -209,15 +277,15 @@ while(<FILE>) {
 
    # When we find the endmodule we close the subckt.
    if (/endmodule/) {
-      print "ends $module\n";
+      print OUT "ends $module\n";
       $module = ""; 
       next;
    }
 
    # If a line does not end in a semicolon, we merge it with the next line.
    # We need to stop if we hit the end of file.
-   while ($_ !~ /;$/ && ! eof(FILE) ) {
-      $_ = nl($_ . <FILE>);
+   while ($_ !~ /;$/ && ! eof(NET) ) {
+      $_ = nl($_ . <NET>);
    }
 
    # We no longer need the semicolon.
@@ -243,9 +311,9 @@ while(<FILE>) {
       if ($left ne "") {
          for $pin (@_[2..$#_]) {
             if ($opt_d && $_[0] eq "wire") {
-               print "* Found wire bus $module.$pin -> $left:$right\n";
-            } else {
-               print "* Found pin bus $module.$pin -> $left:$right\n";
+               print OUT "* Found wire bus $module.$pin -> $left:$right\n";
+            } elsif ($opt_d) {
+               print OUT "* Found pin bus $module.$pin -> $left:$right\n";
             }
             $left{$module,$pin} = $left;
             $right{$module,$pin} = $right;
@@ -264,8 +332,9 @@ while(<FILE>) {
       # We get the module and the pins
       $module = $_[1];
       @pins = @_[3..$#_-1];
-      print "* Found module $module has pins ", join(", ", @pins), "\n"
-            if $opt_d;
+      print "* module $module\n";
+      print OUT "* Found module $module has pins ", join(", ", @pins), "\n"
+         if $opt_d;
 
       # And we tag that we are doing a new module.
       $modstarted = 1;
@@ -284,12 +353,14 @@ while(<FILE>) {
             } elsif ($left{$module,$pins} == $right{$module,$pin}) {
                push @epins, "$pin<$left{$module,$pin}>";
             } else {
-               $pinlist = expbusses($pin . "[$left{$module,$pin}:$right{$module,$pin}]");
+               $pinlist = expbusses($pin .
+                  "[$left{$module,$pin}:$right{$module,$pin}]");
                push @epins, split / *, */, $pinlist;
             }
          }
 
          @{$pins{$module}} = @epins;
+         print OUT "\n";
          fmt "subckt", $module, @{$pins{$module}};
 
          $modstarted = 0;
@@ -321,10 +392,12 @@ while(<FILE>) {
          for $bit (@bus) {
             if (!defined $left{$block,$bit}) {
                push @bits, $bit;
-            } elsif (defined $left{$block,$bit} && $left{$block,$bit} == $right{$block,$bit}) {
+            } elsif (defined $left{$block,$bit} &&
+                  $left{$block,$bit} == $right{$block,$bit}) {
                push @bits, $bit . "<" . $left{$block,$bit} . ">";
             } else {
-               $bitlist = expbusses($bit . "[$left{$block,$bit}:$right{$block,$bit}]");
+               $bitlist = expbusses($bit .
+                  "[$left{$block,$bit}:$right{$block,$bit}]");
                push @bits, split /,/, $bitlist;
             }
          }
@@ -340,12 +413,13 @@ while(<FILE>) {
       # Now we look for .pin(a, b, c) and replace it with .pin<2>(a),
       # .pin<1>(b), .pin<0>(c).
       $_ = exppins($block,$_);
-      print "* was: $oldline\n* now: $_\n" if $oldline ne $_ && $opt_d;
+
+      print OUT "* was: $oldline\n* now: $_\n" if $oldline ne $_ && $opt_d;
 
       # If the device has no pins, it can't be too complex, it must be missing.
       # So we just print a warning and skip it.
       if (! defined $pins{$block}) {
-         print "* block $block inst $inst not found\n";
+         print OUT "* block $block inst $inst not found\n";
          next;
       }
 
@@ -373,10 +447,16 @@ while(<FILE>) {
             $unc = $unc + 1;
          }
          push @pins, $net;
-         print "* Connected Pin $pin<$block> to net $net\n" if $opt_d;
+         print OUT "* Connected Pin $pin<$block> to net $net\n" if $opt_d;
       }
       
-      fmt $block, @pins, $inst;
+      # And we can generate the instance. Note that in spice format all
+      # subcircuits must begin with an X.
+      fmt ((($opt_S) ? "X" . $inst : $inst), @pins, $block);
    }
 }
-close FILE;
+
+close NET if $opt_i ne '-';
+close OUT if $opt_o ne '-';
+
+exit 0;
