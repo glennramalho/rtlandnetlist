@@ -82,6 +82,7 @@ sub nl {
   $nl =~ s/[  ]$//;
   $nl =~ s/\(/ ( /;
   $nl =~ s/\)/ ) /;
+  $nl =~ s/=/ = /;
 
   $nl;
 }
@@ -267,6 +268,7 @@ if ($opt_G) {
 # And we are ready to process the netlist.
 print "* Reading netlist $opt_i\n";
 $unc = 0;
+$short = 0;
 $modstarted = 0;
 $module = "";
 while(<NET>) {
@@ -277,7 +279,11 @@ while(<NET>) {
 
    # When we find the endmodule we close the subckt.
    if (/endmodule/) {
-      print OUT "ends $module\n";
+      if ($opt_S) {
+         print OUT ".ends $module\n";
+      } else {
+         print OUT "ends $module\n";
+      }
       $module = ""; 
       next;
    }
@@ -361,7 +367,7 @@ while(<NET>) {
 
          @{$pins{$module}} = @epins;
          print OUT "\n";
-         fmt "subckt", $module, @{$pins{$module}};
+         fmt ((($opt_S)?".subckt":"subckt"), $module, @{$pins{$module}});
 
          $modstarted = 0;
       }
@@ -415,6 +421,35 @@ while(<NET>) {
       $_ = exppins($block,$_);
 
       print OUT "* was: $oldline\n* now: $_\n" if $oldline ne $_ && $opt_d;
+
+      # If we have any assigns, they need to be replaced with a small resistor
+      # as neither Spice nor Spectre do not allow shorts.
+      if ($block eq "assign") {
+         # The sides might have been expanded, so we first look for the equal
+         # sine.
+         @_ = split /[, \t]+/;
+         $i = 0;
+         do {
+            $i = $i + 1;
+         } while ($_[$i] ne "=" && $i <= $#_);
+         
+         # We now check it. We must have the equals and there should be an
+         # equal number of arguments on either side.
+         if ($i > $#_ || $i == 1 || $i-1 != $#_-$i) {
+            print OUT "* Garbled $_ $i $#_ \n";
+         } else {
+            for ($n = 1; $n < $i; $n = $n + 1) {
+               if ($opt_S) {
+                  fmt "Rshort_$short", $_[$n], $_[$n+$i], "1";
+               } else {
+                  fmt "Rshort_$short", $_[$n], $_[$n+$i], "resistor", "r=1";
+               }
+               $short = $short + 1;
+            }
+         }
+
+         next;
+      }
 
       # If the device has no pins, it can't be too complex, it must be missing.
       # So we just print a warning and skip it.
