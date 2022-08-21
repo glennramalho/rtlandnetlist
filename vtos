@@ -234,7 +234,6 @@ open OUT, ">$opt_o" || die "$progname: open $opt_o: $!\n";
 # We read any models that may be on the end.
 for $model (@ARGV) {
    print "* Reading the spice model $model\n";
-   print OUT "* Reading the spice model $model\n";
    open (FILE, "$model") || die "$progname: $model: $!\n";
    while(<FILE>) {
       s/[;*].*//;
@@ -264,6 +263,14 @@ if ($opt_G) {
    print "* Using globals ", join(", ", @globals), "\n";
    print OUT "* Using globals ", join(", ", @globals), "\n";
 }
+
+# We now build a header
+print OUT <<EOF
+* File: $opt_o
+* Extracted from: $opt_i
+* Generator: $progname
+
+EOF
 
 # And we are ready to process the netlist.
 print "* Reading netlist $opt_i\n";

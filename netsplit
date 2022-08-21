@@ -184,11 +184,11 @@ sub dumpblock {
 };
 
 print <<EOF;
-################################################################################
-# Netlist for block $block
-# Extracted from netlist $netlist
-# Extracted by $progname
-################################################################################
+////////////////////////////////////////////////////////////////////////////////
+// Netlist for block $block
+// Extracted from netlist $netlist
+// Extracted by $progname
+////////////////////////////////////////////////////////////////////////////////
 EOF
 
 dumpblock($block);
