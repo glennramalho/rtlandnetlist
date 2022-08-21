@@ -265,7 +265,7 @@ if ($opt_G) {
 }
 
 # We now build a header
-print OUT <<EOF
+print OUT <<EOF;
 * File: $opt_o
 * Extracted from: $opt_i
 * Generator: $progname
