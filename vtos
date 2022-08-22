@@ -70,8 +70,8 @@ if ($opt_i eq $opt_o) {
 # globals: none
 #
 # Takes a verilog netlist line and strips comments, configuration and white
-# spaces. Also adds space before and after the parenthesis to make it easier
-# to parse.
+# spaces. Also adds space before and after the parenthesis or equalsigns to
+# make it easier to parse.
 #
 sub nl {
   local ($nl) = @_;
@@ -95,21 +95,24 @@ sub nl {
 # patches a line with some simple rules
 #
 sub patchout {
-   local(@l) = @_;
+   local($l) = @_;
    if (${opt_S}) {
-      $line =~ s/</__/g;
-      $line =~ s/>/__/g;
-      $line =~ s/\[/__/g;
-      $line =~ s/\]/__/g;
+      # Spice cannot have any operator in a signal name
+      $l =~ s/</__/g;
+      $l =~ s/>/__/g;
+      $l =~ s/\[/__/g;
+      $l =~ s/\]/__/g;
+      $l =~ s/-/m/g;
    } else {
-      $line =~ s/</\\</g;
-      $line =~ s/>/\\>/g;
-      $line =~ s/\[/\\</g;
-      $line =~ s/\]/\\>/g;
+      # Spectre is ok with operators as long as you backslash them
+      $l =~ s/</\\</g;
+      $l =~ s/>/\\>/g;
+      $l =~ s/\[/\\</g;
+      $l =~ s/\]/\\>/g;
+      $l =~ s/-/\\-/g;
    }
-   $line =~ s/-/m/g;
 
-   $line;
+   $l;
 }
    
 ###################
@@ -123,27 +126,29 @@ sub patchout {
 #
 sub fmt {
    local (@w) = @_;
-   local ($i, $l, $line);
+   local ($i, $len, $line, $word);
 
-   $l = length($w[0]);
-   $line = $w[0];
+   $word = patchout($w[0]);
+   $line = $word;
+   $len = length($word);
    foreach $_ (@w[1..$#w]) {
-      $l = $l + length($_) + 1;
-      if ($l > 78) {
+      $word = patchout($_);
+      if ($len + length($word) + 1 > 78) {
          # The continuation character depends on the output format.
          if ($opt_S) {
-            print OUT patchout($line), "\n";
-            $line = "+  $_";
+            print OUT $line, "\n";
+            $line = "+  $word";
          } else {
-            print OUT patchout($line), " \\\n";
-            $line = "   $_";
+            print OUT $line, " \\\n";
+            $line = "   $word";
          }
-         $l = length($line);
+         $len = length($line);
       } else {
-         $line = $line . " $_";
+         $line = $line . " $word";
+         $len = $len + length($word) + 1;
       }
    }
-   print OUT patchout($line), "\n";
+   print OUT $line, "\n";
 }
 
 ###################
