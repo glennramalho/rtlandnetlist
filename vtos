@@ -152,6 +152,39 @@ sub fmt {
 }
 
 ###################
+# Sub printheader
+# inputs: module name and pin list
+# outputs: returns the ports with bus limits.
+# globals: OUT, $opt_S, %left and %right
+#
+# Takes a verilog netlist line and strips comments, configuration and white
+# spaces. Also adds space before and after the parenthesis or equalsigns to
+# make it easier to parse.
+#
+sub printheader {
+   local($module, @pins) = @_;
+   local(@epins, $i, $pin, $pinlist);
+
+   @epins = ();
+   for($i = 0; $i <= $#pins; $i = $i + 1) {
+      $pin = $pins[$i];
+      if (! defined $left{$module,$pin}) {
+         push @epins, $pin;
+      } elsif ($left{$module,$pins} == $right{$module,$pin}) {
+         push @epins, "$pin<$left{$module,$pin}>";
+      } else {
+         $pinlist = expbusses($pin .
+            "[$left{$module,$pin}:$right{$module,$pin}]");
+         push @epins, split / *, */, $pinlist;
+      }
+   }
+
+   print OUT "\n";
+   fmt ((($opt_S)?".subckt":"subckt"), $module, @epins);
+   @epins;
+}
+
+###################
 # Sub expbusses
 # inputs: line with busses to expand
 # outputs: expanded line
@@ -309,6 +342,14 @@ while(<NET>) {
 
    # When we find the endmodule we close the subckt.
    if (/endmodule/) {
+      # If we have not started yet the module, this must have been an empty
+      # module. We then handle the header now.
+      if ($modstarted) {
+         $pins{$module} = printheader($module, @pins);
+         $modstarted = 0;
+      }
+
+      # And we close off the module.
       if ($opt_S) {
          print OUT ".ends $module\n";
       } else {
@@ -381,24 +422,7 @@ while(<NET>) {
       # If this is the first line after the pins, we need to expand any busses
       # in the pinlist first.
       if ($modstarted) {
-         @epins = ();
-         for($i = 0; $i <= $#pins; $i = $i + 1) {
-            $pin = $pins[$i];
-            if (! defined $left{$module,$pin}) {
-               push @epins, $pin;
-            } elsif ($left{$module,$pins} == $right{$module,$pin}) {
-               push @epins, "$pin<$left{$module,$pin}>";
-            } else {
-               $pinlist = expbusses($pin .
-                  "[$left{$module,$pin}:$right{$module,$pin}]");
-               push @epins, split / *, */, $pinlist;
-            }
-         }
-
-         @{$pins{$module}} = @epins;
-         print OUT "\n";
-         fmt ((($opt_S)?".subckt":"subckt"), $module, @{$pins{$module}});
-
+         $pins{$module} = printheader($module, @pins);
          $modstarted = 0;
       }
 
