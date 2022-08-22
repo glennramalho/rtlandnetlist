@@ -26,7 +26,7 @@ $progname=~s#.*/##;
 $version = '$Id$' . "\n";
 $usage=
 "usage: $progname [-hV]
-       $progname [-dS] [-G globals] -i netlist.v[.gz] -o out.net [models ...]
+       $progname [-dSE] [-G globals] -i netlist.v[.gz] -o out.net [models ...]
 ";
 $help="
 This program converts a structural Verilog netlist into a Spice or Spectre
@@ -168,13 +168,13 @@ sub printheader {
    @epins = ();
    for($i = 0; $i <= $#pins; $i = $i + 1) {
       $pin = $pins[$i];
-      if (! defined $left{$module,$pin}) {
+      if (! defined $left{$module}{$pin}) {
          push @epins, $pin;
-      } elsif ($left{$module,$pins} == $right{$module,$pin}) {
-         push @epins, "$pin<$left{$module,$pin}>";
+      } elsif ($left{$module}{$pin} == $right{$module}{$pin}) {
+         push @epins, "$pin<$left{$module}{$pin}>";
       } else {
          $pinlist = expbusses($pin .
-            "[$left{$module,$pin}:$right{$module,$pin}]");
+            "[$left{$module}{$pin}:$right{$module}{$pin}]");
          push @epins, split / *, */, $pinlist;
       }
    }
@@ -252,11 +252,11 @@ sub exppins {
       @bus = split /[ \t]*,[ \t]*/, $bus;
 
       # Now we find the left for the pin.
-      if (! defined $left{$module,$pin} ) {
+      if (! defined $left{$module}{$pin} ) {
          $left = $#bus;
          print OUT "  * Using guess ($pin) left = $left\n" if $opt_d;
       } else {
-         $left = $left{$module,$pin};
+         $left = $left{$module}{$pin};
          print OUT "  * Using $pin left = $left\n" if $opt_d;
       }
 
@@ -392,8 +392,8 @@ while(<NET>) {
             } elsif ($opt_d) {
                print OUT "* Found pin bus $module.$pin -> $left:$right\n";
             }
-            $left{$module,$pin} = $left;
-            $right{$module,$pin} = $right;
+            $left{$module}{$pin} = $left;
+            $right{$module}{$pin} = $right;
          }
       }
       next;
@@ -450,14 +450,14 @@ while(<NET>) {
          @bus = split /[ \t]*,[ \t]*/, $pinbus;
          @bits = ();
          for $bit (@bus) {
-            if (!defined $left{$block,$bit}) {
+            if (!defined $left{$block}{$bit}) {
                push @bits, $bit;
-            } elsif (defined $left{$block,$bit} &&
-                  $left{$block,$bit} == $right{$block,$bit}) {
-               push @bits, $bit . "<" . $left{$block,$bit} . ">";
+            } elsif (defined $left{$block}{$bit} &&
+                  $left{$block}{$bit} == $right{$block}{$bit}) {
+               push @bits, $bit . "<" . $left{$block}{$bit} . ">";
             } else {
                $bitlist = expbusses($bit .
-                  "[$left{$block,$bit}:$right{$block,$bit}]");
+                  "[$left{$block}{$bit}:$right{$block}{$bit}]");
                push @bits, split /,/, $bitlist;
             }
          }
