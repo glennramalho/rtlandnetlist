@@ -345,7 +345,7 @@ while(<NET>) {
       # If we have not started yet the module, this must have been an empty
       # module. We then handle the header now.
       if ($modstarted) {
-         $pins{$module} = printheader($module, @pins);
+         @{$pins{$module}} = printheader($module, @pins);
          $modstarted = 0;
       }
 
@@ -422,7 +422,7 @@ while(<NET>) {
       # If this is the first line after the pins, we need to expand any busses
       # in the pinlist first.
       if ($modstarted) {
-         $pins{$module} = printheader($module, @pins);
+         @{$pins{$module}} = printheader($module, @pins);
          $modstarted = 0;
       }
 
