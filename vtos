@@ -39,7 +39,9 @@ netlist.
 -i     netlist input, cam be compressed.
 -o     output converted file, can't be the same as the input
 -S     Use spice format. Default is spectre format.
-models models to extract the pin order of library cells
+models models to extract the pin order of library cells, models ending in .scs
+         or .spectre are treated as spectre models, others are treated as
+         spice models
 ";
 
 use Getopt::Std;
@@ -289,24 +291,69 @@ open OUT, ">$opt_o" || die "$progname: open $opt_o: $!\n";
 
 # We read any models that may be on the end.
 for $model (@ARGV) {
-   print "* Reading the spice model $model\n";
    open (FILE, "$model") || die "$progname: $model: $!\n";
-   while(<FILE>) {
-      s/[;*].*//;
-      s/^\s+//;
-      s/\s+$//;
-      next if m/^$/;
-      @_ = split /[, \t]+/;
 
-      if (lc($_[0]) eq ".subckt") {
-         split /[ \t]+/;
-         $subckt = $_[1];
-         @{$pins{$subckt}} = @_[2..$#_];
-         if ($opt_d) {
-            print OUT "* Found SUBCKT $_[1]\n";
+   if ($model =~ /\.scs/i || $model =~ /\.spectre/i) {
+      print "* Reading the spectre model $model\n";
+
+      while(<FILE>) {
+         s/[;*].*//;
+         s/^\s+//;
+         s/\s+$//;
+         next if m/^$/;
+
+         # Lines that end in backslash need to be continuied
+         while ($_ =~ s/\\$/ / && ! eof(FILE) ) {
+            $_ = nl($_ . <FILE>);
+         }
+
+         # And now we can procss the line
+         @_ = split /[, \t]+/;
+
+         if (lc($_[0]) eq "subckt") {
+            $subckt = $_[1];
+            @{$pins{$subckt}} = @_[2..$#_];
+            print OUT "* Found SUBCKT $_[1], pins @{$pins{$subckt}}\n" if$opt_d;
+         }
+      }
+   } else {
+      print "* Reading the spice model $model\n";
+
+      $last = "";
+      while(<FILE>) {
+         # For any line we wipe out comments and whitespace.
+         s/[;*].*//;
+         s/^\s+//;
+         s/\s+$//;
+
+         # If we have two lines, we then can decide if the second one is a
+         # continuation of the first line.
+         if (s/^\+/ /) {
+            $_ = $last . $_;
+            $last = "";
+         }
+
+         # If we have $_ but no $last, we need to check the next line to see
+         # if there is a continuation. We only do this if the file has not
+         # finished, of course.
+         if ($last eq "" && ! eof(FILE)) {
+            $last = $_;
+            next;
+         }
+
+         # Now we split $last to process it. Note that we always process $last
+         # as we know there is no continuation then.
+         @_ = split /[, \t]+/, $last;
+
+         if (lc($_[0]) eq ".subckt") {
+            split /[ \t]+/;
+            $subckt = $_[1];
+            @{$pins{$subckt}} = @_[2..$#_];
+            print OUT "* Found SUBCKT $_[1], pins @{$pins{$subckt}}\n" if$opt_d;
          }
       }
    }
+
    close FILE;
 }
 
@@ -338,7 +385,9 @@ while(<NET>) {
    # Remove whitespace
    $_ = nl($_);
    next if m/^$/;
-   last if m/`ifdef/;
+   last if m/`ifn?def/;
+   last if m/`include/;
+   last if m/`else/;
 
    # When we find the endmodule we close the subckt.
    if (/endmodule/) {
