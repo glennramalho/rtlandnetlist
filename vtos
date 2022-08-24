@@ -39,9 +39,9 @@ netlist.
 -i     netlist input, cam be compressed.
 -o     output converted file, can't be the same as the input
 -S     Use spice format. Default is spectre format.
-models models to extract the pin order of library cells, models ending in .scs
-         or .spectre are treated as spectre models, others are treated as
-         spice models
+models models to extract the pin order of library cells, according to the ending
+         .scs,.spectre = spectre model
+         others = spice models
 ";
 
 use Getopt::Std;
@@ -119,7 +119,7 @@ sub patchout {
    
 ###################
 # Sub fmt
-# inputs: line to print
+# inputs: precontinuationchar, postcontinuationchar, line to print
 # outputs: none
 # globals: OUT, $opt_S
 #
@@ -127,7 +127,7 @@ sub patchout {
 # It also elimitates illegal characters in the process.
 #
 sub fmt {
-   local (@w) = @_;
+   local ($pc, $ec, @w) = @_;
    local ($i, $len, $line, $word);
 
    $word = patchout($w[0]);
@@ -137,13 +137,9 @@ sub fmt {
       $word = patchout($_);
       if ($len + length($word) + 1 > 78) {
          # The continuation character depends on the output format.
-         if ($opt_S) {
-            print OUT $line, "\n";
-            $line = "+  $word";
-         } else {
-            print OUT $line, " \\\n";
-            $line = "   $word";
-         }
+         print OUT $line, (($ec eq "")?"\n":" $ec\n");
+         # Then, the next line will get the precontinuation char, if any.
+         $line = (($pc eq "")?"   ":"$pc  ") . $word;
          $len = length($line);
       } else {
          $line = $line . " $word";
@@ -182,7 +178,11 @@ sub printheader {
    }
 
    print OUT "\n";
-   fmt ((($opt_S)?".subckt":"subckt"), $module, @epins);
+   if ($opt_S) {
+      fmt "+", "", ".subckt", $module, @epins;
+   } else {
+      fmt "", "\\", "subckt", $module, @epins;
+   }
    @epins;
 }
 
@@ -313,7 +313,10 @@ for $model (@ARGV) {
          if (lc($_[0]) eq "subckt") {
             $subckt = $_[1];
             @{$pins{$subckt}} = @_[2..$#_];
-            print OUT "* Found SUBCKT $_[1], pins @{$pins{$subckt}}\n" if$opt_d;
+            if ($opt_d) {
+               fmt "*", "", "* Found SUBCKT", $_[1], "with pins:",
+                  @{$pins{$subckt}};
+            }
          }
       }
    } else {
@@ -349,7 +352,10 @@ for $model (@ARGV) {
             split /[ \t]+/;
             $subckt = $_[1];
             @{$pins{$subckt}} = @_[2..$#_];
-            print OUT "* Found SUBCKT $_[1], pins @{$pins{$subckt}}\n" if$opt_d;
+            if ($opt_d) {
+               fmt "*", "", "* Found SUBCKT", $_[1], "with pins:",
+                  @{$pins{$subckt}};
+            }
          }
       }
    }
@@ -385,9 +391,10 @@ while(<NET>) {
    # Remove whitespace
    $_ = nl($_);
    next if m/^$/;
-   last if m/`ifn?def/;
-   last if m/`include/;
-   last if m/`else/;
+   next if m/`ifn?def/;
+   next if m/`include/;
+   next if m/`else/;
+   next if m/`endif/;
 
    # When we find the endmodule we close the subckt.
    if (/endmodule/) {
@@ -459,8 +466,9 @@ while(<NET>) {
       $module = $_[1];
       @pins = @_[3..$#_-1];
       print "* module $module\n";
-      print OUT "* Found module $module has pins ", join(", ", @pins), "\n"
-         if $opt_d;
+      if ($opt_d) {
+         fmt "*", "", "* Found module $module has pins", @pins;
+      }
 
       # And we tag that we are doing a new module.
       $modstarted = 1;
@@ -499,14 +507,17 @@ while(<NET>) {
          @bus = split /[ \t]*,[ \t]*/, $pinbus;
          @bits = ();
          for $bit (@bus) {
-            if (!defined $left{$block}{$bit}) {
+            # Every element is checked in the module to see if it is missing
+            # the bus indexes. We then go through the wires, inputs, outputs
+            # and so on in this module.
+            if (!defined $left{$module}{$bit}) {
                push @bits, $bit;
-            } elsif (defined $left{$block}{$bit} &&
-                  $left{$block}{$bit} == $right{$block}{$bit}) {
-               push @bits, $bit . "<" . $left{$block}{$bit} . ">";
+            } elsif (defined $left{$module}{$bit} &&
+                  $left{$module}{$bit} == $right{$module}{$bit}) {
+               push @bits, $bit . "<" . $left{$module}{$bit} . ">";
             } else {
                $bitlist = expbusses($bit .
-                  "[$left{$block}{$bit}:$right{$block}{$bit}]");
+                  "[$left{$module}{$bit}:$right{$module}{$bit}]");
                push @bits, split /,/, $bitlist;
             }
          }
@@ -523,7 +534,10 @@ while(<NET>) {
       # .pin<1>(b), .pin<0>(c).
       $_ = exppins($block,$_);
 
-      print OUT "* was: $oldline\n* now: $_\n" if $oldline ne $_ && $opt_d;
+      if ($oldline ne $_ && $opt_d) {
+         fmt "*", "", "* was:", split(/[ \t]+/, $oldline);
+         fmt "*", "", "* now:", split(/[ \t]+/, $_);
+      }
 
       # If we have any assigns, they need to be replaced with a small resistor
       # as neither Spice nor Spectre do not allow shorts.
@@ -543,9 +557,10 @@ while(<NET>) {
          } else {
             for ($n = 1; $n < $i; $n = $n + 1) {
                if ($opt_S) {
-                  fmt "Rshort_$short", $_[$n], $_[$n+$i], "1";
+                  fmt "+", "", "Rshort_$short", $_[$n], $_[$n+$i], "1";
                } else {
-                  fmt "Rshort_$short", $_[$n], $_[$n+$i], "resistor", "r=1";
+                  fmt "", "\\", "Rshort_$short", $_[$n], $_[$n+$i], "resistor",
+                     "r=1";
                }
                $short = $short + 1;
             }
@@ -574,10 +589,20 @@ while(<NET>) {
             $net = $1;
             $net =~ s/^\s+//;
             $net =~ s/\s+$//;
+            # pins connected to void we leave unconnected
+            if ($net eq "") {
+               $net = "UNCON_$unc";
+               $unc = $unc + 1;
+            }
          } elsif ($_ =~ m/\.$nobus\s*\(([^()]*)\)/) {
             $net = $1;
             $net =~ s/^\s+//;
             $net =~ s/\s+$//;
+            # pins connected to void we leave unconnected
+            if ($net eq "") {
+               $net = "UNCON_$unc";
+               $unc = $unc + 1;
+            }
          } elsif (defined $globals{$pin}) {
             $net = $pin;
          } else {
@@ -591,9 +616,9 @@ while(<NET>) {
       # And we can generate the instance. Note that in spice format all
       # subcircuits must begin with an X.
       if ($opt_S) {
-         fmt "X" . $inst, @pins, $block;
+         fmt "+", "", "X" . $inst, @pins, $block;
       } else {
-         fmt $inst, "(", @pins, ")", $block;
+         fmt "", "\\", $inst, "(", @pins, ")", $block;
       }
    }
 }
