@@ -26,7 +26,8 @@ $progname=~s#.*/##;
 $version = '$Id$' . "\n";
 $usage=
 "usage: $progname [-hV]
-       $progname [-dSE] [-G globals] -i netlist.v[.gz] -o out.net [models ...]
+       $progname [-dSE] [-G globals] -i netlist.v[.gz] -o out.net \
+          [-s shellfile] [models ...]
 ";
 $help="
 This program converts a structural Verilog netlist into a Spice or Spectre
@@ -39,13 +40,16 @@ netlist.
 -i     netlist input, cam be compressed.
 -o     output converted file, can't be the same as the input
 -S     Use spice format. Default is spectre format.
+-s     generate spectre/spice shell wrapper.
+         .scs,.spectre = spectre
+         others = spice
 models models to extract the pin order of library cells, according to the ending
          .scs,.spectre = spectre model
          others = spice models
 ";
 
 use Getopt::Std;
-getopts('hVdG:Si:o:') || die $usage . "\n";
+getopts('hVdG:Si:o:s:') || die $usage . "\n";
 
 if ($opt_h) {
    printf $usage;
@@ -411,6 +415,7 @@ while(<NET>) {
       } else {
          print OUT "ends $module\n";
       }
+      $lastmodule = $module;
       $module = ""; 
       next;
    }
@@ -431,18 +436,30 @@ while(<NET>) {
    if ($_[0] eq "input" || $_[0] eq "output" || $_[0] eq "inout" ||
          $_[0] eq "wire") {
       if ($_[1] =~ /\[(.*):(.*)\]/) {
+         $start = 2;
          $left = $1;
          $right = $2;
       } elsif ($_[1] =~ /\[(.*)\]/) {
+         $start = 2;
          $left = $1;
          $right = $1;
       } else {
+         $start = 1;
          $left = "";
          $right = "";
       }
 
+      # We also store the port directions for the wrapper.
+      if ($_[0] eq "input") {
+         push @{$input{$module}}, @_[$start..$#_];
+      } elsif ($_[0] eq "output") {
+         push @{$output{$module}}, @_[$start..$#_];
+      } elsif ($_[0] eq "inout") {
+         push @{$inout{$module}}, @_[$start..$#_];
+      }
+
       if ($left ne "") {
-         for $pin (@_[2..$#_]) {
+         for $pin (@_[$start..$#_]) {
             if ($opt_d && $_[0] eq "wire") {
                print OUT "* Found wire bus $module.$pin -> $left:$right\n";
             } elsif ($opt_d) {
@@ -625,5 +642,45 @@ while(<NET>) {
 
 close NET if $opt_i ne '-';
 close OUT if $opt_o ne '-';
+
+# We now generate the shell using the last module in the list.
+if ($opt_s) {
+   open OUT, ">$opt_s" || die "$progname: open $opt_s: $!\n";
+print OUT <<EOF;
+* File: $opt_s
+* Shell for $lastmodule
+* Extracted from: $opt_i
+* Generator: $progname
+
+EOF
+   if ($opt_s =~ /\.scs/ || $opt_s =~ /\.spectre/) {
+      fmt "", "\\", "i_$lastmodule", "(", @{$pins{$lastmodule}}, ")",
+         $lastmodule;
+      print OUT "\n";
+      for $pin (@{$input{$lastmodule}}) {
+         fmt "", "\\", "R$pin", "(", $pin, "0", ")", "resistor", "r=1k";
+      }
+      for $pin (@{$output{$lastmodule}}) {
+         fmt "", "\\", "C$pin", "(", $pin, "0", ")", "capacitor", "c=1p";
+      }
+      for $pin (@{$inout{$lastmodule}}) {
+         fmt "", "\\", "C$pin", "(", $pin, "0", ")", "capacitor", "c=1p";
+      }
+   } else {
+      fmt "+", "", "Xi_" . $lastmodule, @{$pins{$lastmodule}}, $lastmodule;
+      print OUT "\n";
+      for $pin (@{$input{$lastmodule}}) {
+         fmt "+", "", "R$pin", $pin, "0", "1k";
+      }
+      for $pin (@{$output{$lastmodule}}) {
+         fmt "+", "", "C$pin", $pin, "0", "1p";
+      }
+      for $pin (@{$inout{$lastmodule}}) {
+         fmt "+", "", "C$pin", $pin, "0", "1p";
+      }
+      print OUT "\n\n.end\n";
+   }
+   close OUT;
+}
 
 exit 0;
