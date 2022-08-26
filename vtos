@@ -353,7 +353,6 @@ for $model (@ARGV) {
          @_ = split /[, \t]+/, $last;
 
          if (lc($_[0]) eq ".subckt") {
-            split /[ \t]+/;
             $subckt = $_[1];
             @{$pins{$subckt}} = @_[2..$#_];
             if ($opt_d) {
