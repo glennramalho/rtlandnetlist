@@ -327,30 +327,23 @@ for $model (@ARGV) {
       print "* Reading the spice model $model\n";
 
       $last = "";
-      while(<FILE>) {
+      while($_ = <FILE> || $last ne "") {
          # For any line we wipe out comments and whitespace.
          s/[;*].*//;
          s/^\s+//;
          s/\s+$//;
 
-         # If we have two lines, we then can decide if the second one is a
-         # continuation of the first line.
-         if (s/^\+/ /) {
-            $_ = $last . $_;
-            $last = "";
-         }
-
-         # If we have $_ but no $last, we need to check the next line to see
-         # if there is a continuation. We only do this if the file has not
-         # finished, of course.
-         if ($last eq "" && ! eof(FILE)) {
-            $last = $_;
+         # If we find a + in the current line, we attach this line to the
+         # end of the previous line.
+         if (s/^\s*\+/ /) {
+            $last = $last . $_;
             next;
          }
 
-         # Now we split $last to process it. Note that we always process $last
-         # as we know there is no continuation then.
+         # Now we split $last to process it. Once we are done, we blank out
+         # the $last to keep from processing it twice.
          @_ = split /[, \t]+/, $last;
+         $last = $_;
 
          if (lc($_[0]) eq ".subckt") {
             $subckt = $_[1];
