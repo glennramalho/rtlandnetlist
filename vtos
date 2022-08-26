@@ -644,7 +644,36 @@ close NET if $opt_i ne '-';
 close OUT if $opt_o ne '-';
 
 # We now generate the shell using the last module in the list.
+sub wrappin {
+   local($spectre, $pin, $out) = @_;
+
+   if ($spectre && $out) {
+      fmt "", "\\", "C$pin", "(", $pin, "0", ")", "capacitor", "c=1p";
+   } elsif ($spectre) {
+      fmt "", "\\", "R$pin", "(", $pin, "0", ")", "resistor", "r=1k";
+   } elsif ($out) {
+      fmt "+", "", "C$pin", $pin, "0", "1p";
+   } else {
+      fmt "+", "", "R$pin", $pin, "0", "1k";
+   }
+}
+
+sub dopin {
+   local($spectre, $pin, $module, $out) = @_;
+   local($i);
+
+   if (! defined $left{$module}{$pin}) {
+      wrappin($spectre, $pin, $out);
+      return;
+   }
+
+   for ($i = $left{$module}{$pin}; $i >= $right{$module}{$pin}; $i = $i - 1){
+      wrappin($spectre, "$pin<$i>", $out);
+   }
+}
+
 if ($opt_s) {
+   printf "* Generating Wrapper\n";
    open OUT, ">$opt_s" || die "$progname: open $opt_s: $!\n";
 print OUT <<EOF;
 * File: $opt_s
@@ -657,27 +686,15 @@ EOF
       fmt "", "\\", "i_$lastmodule", "(", @{$pins{$lastmodule}}, ")",
          $lastmodule;
       print OUT "\n";
-      for $pin (@{$input{$lastmodule}}) {
-         fmt "", "\\", "R$pin", "(", $pin, "0", ")", "resistor", "r=1k";
-      }
-      for $pin (@{$output{$lastmodule}}) {
-         fmt "", "\\", "C$pin", "(", $pin, "0", ")", "capacitor", "c=1p";
-      }
-      for $pin (@{$inout{$lastmodule}}) {
-         fmt "", "\\", "C$pin", "(", $pin, "0", ")", "capacitor", "c=1p";
-      }
+      for $pin (@{$input{$lastmodule}}) { dopin(1, $pin, $lastmodule, 0); }
+      for $pin (@{$output{$lastmodule}}) { dopin(1, $pin, $lastmodule, 1); }
+      for $pin (@{$inout{$lastmodule}}) { dopin(1, $pin, $lastmodule, 1); }
    } else {
       fmt "+", "", "Xi_" . $lastmodule, @{$pins{$lastmodule}}, $lastmodule;
       print OUT "\n";
-      for $pin (@{$input{$lastmodule}}) {
-         fmt "+", "", "R$pin", $pin, "0", "1k";
-      }
-      for $pin (@{$output{$lastmodule}}) {
-         fmt "+", "", "C$pin", $pin, "0", "1p";
-      }
-      for $pin (@{$inout{$lastmodule}}) {
-         fmt "+", "", "C$pin", $pin, "0", "1p";
-      }
+      for $pin (@{$input{$lastmodule}}) { dopin(0, $pin, $lastmodule, 0); }
+      for $pin (@{$output{$lastmodule}}) { dopin(0, $pin, $lastmodule, 1); }
+      for $pin (@{$inout{$lastmodule}}) { dopin(0, $pin, $lastmodule, 1); }
       print OUT "\n\n.end\n";
    }
    close OUT;
