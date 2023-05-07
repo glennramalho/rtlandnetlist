@@ -110,19 +110,62 @@ if ($opt_s) {
          # If we see a cell, we set the tag.
          if ($lvl == 1 && /^cell\s*\(\s*(.+)\s*\)/) {
             print "*** Cell $1\n" if $opt_d;
+            @libleak = ();
+            undef $leaknowhen;
             $cellname = $1;
+         }
+         # We go ahead and clear these when we enter a leakage_power.
+         if ($lvl == 2 && /^leakage_power\*\(.*\)/) {
+            $leakval = 0;
+            $whenfound = 0;
          }
          $lvl = $lvl + 1;
       } elsif (/\}/) {
+         # If we found the end of a leakage group we need to check if when was
+         # found. If this group had no when the value should be at the end of
+         # the list. Note that we only do this once.
+         if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power") {
+            if ($opt_d) {
+               print "   ** leakgroup[$#lvl] [when=$whenfound] val=$leakval\n";
+            }
+            if (! defined $leaknowhen && !$whenfound) {
+               $leaknowhen = $leakval;
+            }
+            # Either way we clear the whenfound flag to not affect the next
+            # group. We also store the value in the list.
+            push @libleak, $leakval;
+            $whenfound = 0;
+         }
+         # If this is the end of the cell we close it.
          if ($lvl == 2 && $lvl[$#lvl] eq "cell") {
             print "*** Closing $cellname\n" if ${opt_d};
-            if (! defined $leak{$cellname}) {
+            # Now we look for the leakage. We have a set of rules which must
+            # be checked to get the value.
+            # 1st: cell_leakage_power for the cell
+            # 2nd: first leakage_power group without a "when"
+            # 3rd: average of leakage_power groups
+            # 4th: default_leakage_power
+            if (defined $leak{$cellname}) {
+               $method = "cell_leakage_power";
+            }
+            elsif (defined $leaknowhen) {
+               $leak{$cellname} = $leaknowhen;
+               $method = "leak_no_when";
+            }
+            elsif (@libleak != 0) {
+               $leak{$cellname} = 0.0;
+               $method = "leak_avg";
+               for(@libleak) { $leak{$cellname} = $leak{$cellname} + $_; };
+               $leak{$cellname} = ($leak{$cellname} / (@libleak)) * $leakmult;
+            }
+            else {
+               $method = "default";
                $leak{$cellname} = $default_leakage_power * $leakmult;
             }
             if ($opt_S) {
                print "cell $cellname:";
                print " area = $area{$cellname}";
-               print ", leakage = $leak{$cellname}$leakunit";
+               print ", leakage = $leak{$cellname}$leakunit [$method]";
                print "\n";
             }
             $cellname = "";
@@ -141,8 +184,19 @@ if ($opt_s) {
       if ($lvl == 2 && /^cell_leakage_power\s*:\s*(.*)\s*;/) {
          $leak{$cellname} = $1 * $leakmult;
       }
+      if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power" && /^value\s*:\s*(.*)\s*;/) {
+         $leakval = $1;
+         $leakval =~ s/"\s*//;
+         $leakval =~ s/\s*"//;
+      }
+      if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power" && /^when\s*:/) {
+         $whenfound = 1;
+      }
       if ($lvl == 2 && /^area\s*:\s*(.*)\s*;/) {
-         $area{$cellname} = $1 + 0;
+         $val = $1;
+         $val =~ s/"\s*//;
+         $val =~ s/\s*"//;
+         $area{$cellname} = $val + 0;
       }
 
    }
