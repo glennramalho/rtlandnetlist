@@ -35,11 +35,13 @@ instantiated in the hierarchy.
 -V     Version
 -d     debug, implies -L
 -S     list library stats
--s     calculate power using the following liberty file
+-s     calculate power using the following liberty file. If the file ends in
+         .gz it will be uncompressed first.
 -i     print hierarchy in instances instead of modules
 -l     specify maximum level depth.
 -A     Multiply the area by a factor.
 -L     Multiply the leakage by a factor.
+file.v The file to be checked. If it ends in .gz it will be uncompressed first.
 ";
 
 use Getopt::Std;
@@ -79,7 +81,11 @@ $incomment=0;
 $leakmult = 1;
 $default_leakage_power = 0;
 if ($opt_s) {
-   open(LIB, $opt_s) || die "$progname: $opt_s: $!\n";
+   if ($opt_s =~ m/\.gz$/) {
+      open LIB, "gunzip -c $opt_s|" || die "$progname: $opt_s: $!\n";
+   } else {
+      open LIB, $opt_s || die "$progname: $opt_s: $!\n";
+   }
    print "Reading liberty file $opt_s\n";
    while(<LIB>) {
       # First we get rid of whitespaces;
