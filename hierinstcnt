@@ -63,16 +63,33 @@ $opt_S = 1 if ${opt_d};
 
 $module = "";
 sub nl {
-  local ($nl) = @_;
-  chomp $nl;
-  $nl =~ s/\(\*.*\*\)//;
-  $nl =~ s#//.*##;
-  $nl =~ s/^[  ]+//;
-  $nl =~ s/[  ]$//;
-  $nl =~ s/\(/ ( /;
-  $nl =~ s/\)/ ) /;
+   local ($nl) = @_;
+   chomp $nl;
+   $nl =~ s/\(\*.*\*\)//;
+   $nl =~ s#//.*##;
+   $nl =~ s/^[  ]+//;
+   $nl =~ s/[  ]$//;
+   $nl =~ s/\(/ ( /;
+   $nl =~ s/\)/ ) /;
 
-  $nl;
+   $nl;
+}
+
+sub getval {
+   local($v) = @_;
+   # Numbers in Liberty may be in quotes.
+   $v =~ s/^\s*\"\s*//;
+   $v =~ s/\s*\"\s*$//;
+   return $v;
+}
+
+sub getnum {
+   local($v) = @_;
+   # Numbers in Liberty may be in quotes.
+   $v =~ s/^\s*\"\s*//;
+   $v =~ s/\s*\"\s*$//;
+   # We add zero to make sure it is a val and return it.
+   return $v + 0.0;
 }
 
 # If opt_s is used, we need to get the data from the liberty file.
@@ -116,32 +133,28 @@ if ($opt_s) {
          # If we see a cell, we set the tag.
          if ($lvl == 1 && /^cell\s*\(\s*(.+)\s*\)/) {
             print "*** Cell $1\n" if $opt_d;
-            @libleak = ();
-            undef $leaknowhen;
+            %libleak = ();
             $cellname = $1;
          }
          # We go ahead and clear these when we enter a leakage_power.
          if ($lvl == 2 && /^leakage_power\*\(.*\)/) {
             $leakval = 0;
-            $whenfound = 0;
+            $when = "--"; # We use dash as default for none. */
+            $related_pg_pin = "--"; # We use dash as default for none. */
          }
          $lvl = $lvl + 1;
       } elsif (/\}/) {
-         # If we found the end of a leakage group we need to check if when was
-         # found. If this group had no when the value should be at the end of
-         # the list. Note that we only do this once.
+         # The leakage we now store it in a list according to the when field.
+         # There might not be a when field. If we see multiple leakages to the
+         # same when we expect them to have different related pg pins.
          if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power") {
             if ($opt_d) {
-               print "   ** leakgroup[$#lvl] [when=$whenfound] val=$leakval\n";
+               print "   ** leakgroup[$#lvl] [when=$when] [related_pg_pin=$related_pg_pin] val=$leakval\n";
             }
-            if (! defined $leaknowhen && !$whenfound) {
-               $leaknowhen = $leakval;
-            }
-            # Either way we clear the whenfound flag to not affect the next
-            # group. We also store the value in the list.
-            push @libleak, $leakval;
-            $whenfound = 0;
+
+            $libleak{$when} = $libleak{$when} + $leakval;
          }
+
          # If this is the end of the cell we close it.
          if ($lvl == 2 && $lvl[$#lvl] eq "cell") {
             print "*** Closing $cellname\n" if ${opt_d};
@@ -149,20 +162,21 @@ if ($opt_s) {
             # be checked to get the value.
             # 1st: cell_leakage_power for the cell
             # 2nd: first leakage_power group without a "when"
-            # 3rd: average of leakage_power groups
+            # 3rd: average of each when leakage_power set
             # 4th: default_leakage_power
             if (defined $leak{$cellname}) {
                $method = "cell_leakage_power";
             }
-            elsif (defined $leaknowhen) {
-               $leak{$cellname} = $leaknowhen;
+            elsif (defined $libleak{"--"}) {
+               $leak{$cellname} = $libleak{"--"};
                $method = "leak_no_when";
             }
-            elsif (@libleak != 0) {
+            elsif (%libleak != 0) {
                $leak{$cellname} = 0.0;
                $method = "leak_avg";
-               for(@libleak) { $leak{$cellname} = $leak{$cellname} + $_; };
-               $leak{$cellname} = ($leak{$cellname} / (@libleak)) * $leakmult;
+               for(values %libleak) { $leak{$cellname} = $leak{$cellname} + $_;}
+               $leak{$cellname} =
+                  ($leak{$cellname} / (keys %libleak)) * $leakmult;
             }
             else {
                $method = "default";
@@ -180,29 +194,35 @@ if ($opt_s) {
          $lvl = $lvl - 1;
       }
 
+      # For the leakage we need the power unit, the default value and the
+      # cell value.
       if ($lvl == 1 && /^leakage_power_unit\s*:\s*"([0-9]*)([^0-9]+)"\s*;/) {
          $leakmult=$1;
          $leakunit=$2;
       }
       if ($lvl == 1 && /^default_leakage_power\s*:\s*(.*)\s*;/) {
-         $default_leakage_power=$1;
+         $default_leakage_power=getnum($1);
       }
       if ($lvl == 2 && /^cell_leakage_power\s*:\s*(.*)\s*;/) {
-         $leak{$cellname} = $1 * $leakmult;
+         $leak{$cellname} = getnum($1) * $leakmult;
       }
-      if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power" && /^value\s*:\s*(.*)\s*;/) {
-         $leakval = $1;
-         $leakval =~ s/"\s*//;
-         $leakval =~ s/\s*"//;
+
+      # For leakage power groups we have three parameters to watch for: the
+      # value, the related pg pin and the when.
+      if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power" &&
+            /^value\s*:\s*(.*)\s*;/) {
+         $leakval = getnum($1);
       }
-      if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power" && /^when\s*:/) {
-         $whenfound = 1;
+      if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power" &&
+            /^when\s*:\s*(.*)\s*;/) {
+         $when = getval($1);
+      }
+      if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power" &&
+            /^related_pg_pin\s*:\s*(.*)\s*;/) {
+         $related_pg_pin = getval($1);
       }
       if ($lvl == 2 && /^area\s*:\s*(.*)\s*;/) {
-         $val = $1;
-         $val =~ s/"\s*//;
-         $val =~ s/\s*"//;
-         $area{$cellname} = $val + 0;
+         $area{$cellname} = getnum($1);
       }
 
    }
