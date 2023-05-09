@@ -137,7 +137,7 @@ if ($opt_s) {
             $cellname = $1;
          }
          # We go ahead and clear these when we enter a leakage_power.
-         if ($lvl == 2 && /^leakage_power\*\(.*\)/) {
+         if ($lvl == 2 && /^leakage_power\s*\(\s*\)/) {
             $leakval = 0;
             $when = "--"; # We use dash as default for none. */
             $related_pg_pin = "--"; # We use dash as default for none. */
@@ -149,7 +149,7 @@ if ($opt_s) {
          # same when we expect them to have different related pg pins.
          if ($lvl == 3 && $lvl[$#lvl] eq "leakage_power") {
             if ($opt_d) {
-               print "   ** leakgroup[$#lvl] [when=$when] [related_pg_pin=$related_pg_pin] val=$leakval\n";
+               print "   ** leakgroup [when=$when] [related_pg_pin=$related_pg_pin] val=$leakval\n";
             }
 
             $libleak{$when} = $libleak{$when} + $leakval;
