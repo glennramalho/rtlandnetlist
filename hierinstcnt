@@ -42,10 +42,20 @@ instantiated in the hierarchy.
 -A     Multiply the area by a factor.
 -L     Multiply the leakage by a factor.
 file.v The file to be checked. If it ends in .gz it will be uncompressed first.
+
 ";
 
-use Getopt::Std;
-getopts('hVdiSl:s:A:L:') || die $usage;
+use Getopt::Long qw(:config bundling);
+GetOptions(
+   "h" => \$opt_h,
+   "V" => \$opt_V,
+   "d" => \$opt_d,
+   "S" => \$opt_S,
+   "s=s" => \@opt_s,
+   "i" => \$opt_i,
+   "l=i" => \$opt_i,
+   "A=f" => \$opt_A,
+   "L=f" => \$opt_L) || die $usage;
 
 if ($opt_h) {
    printf $usage;
@@ -93,16 +103,16 @@ sub getnum {
 }
 
 # If opt_s is used, we need to get the data from the liberty file.
-$lvl=0;
-$incomment=0;
-$leakmult = 1;
-$default_leakage_power = 0;
-if ($opt_s) {
+foreach $opt_s (@opt_s) {
    if ($opt_s =~ m/\.gz$/) {
       open LIB, "gunzip -c $opt_s|" || die "$progname: $opt_s: $!\n";
    } else {
       open LIB, $opt_s || die "$progname: $opt_s: $!\n";
    }
+   $lvl=0;
+   $incomment=0;
+   $leakmult = 1;
+   $default_leakage_power = 0;
    print "Reading liberty file $opt_s\n";
    while(<LIB>) {
       # First we get rid of whitespaces;
@@ -131,10 +141,11 @@ if ($opt_s) {
          push @lvl, $keyword;
 
          # If we see a cell, we set the tag.
-         if ($lvl == 1 && /^cell\s*\(\s*(.+)\s*\)/) {
+         if ($lvl == 1 && /^cell\s*\(\s*"?([^"]+)"?\s*\)/) {
             print "*** Cell $1\n" if $opt_d;
             %libleak = ();
             $cellname = $1;
+            $celllib{$cellname} = $opt_s;
          }
          # We go ahead and clear these when we enter a leakage_power.
          if ($lvl == 2 && /^leakage_power\s*\(\s*\)/) {
@@ -196,7 +207,7 @@ if ($opt_s) {
 
       # For the leakage we need the power unit, the default value and the
       # cell value.
-      if ($lvl == 1 && /^leakage_power_unit\s*:\s*"([0-9]*)([^0-9]+)"\s*;/) {
+      if ($lvl == 1 && /^leakage_power_unit\s*:\s*"?([0-9]*)([^0-9]+)"?\s*;/) {
          $leakmult=$1;
          $leakunit=$2;
       }
@@ -251,8 +262,17 @@ if ($ARGV[0] =~ m/\.gz$/) {
    open FILE, $ARGV[0] || die "$progname: $ARGV[0]: $!\n";
 }
 print "Reading netlist $ARGV[0]\n";
+$incomment = 0;
 while(<FILE>) {
    # Remove whitespace
+   if ($incomment) {
+      next unless (s#.*\*/##);
+      $incomment = 0;
+   }
+   s#/\*.*\*/##;
+   if (s#/\*.*##) {
+      $incomment = 1;
+   }
    $_ = nl($_);
    next if m/^$/;
    last if m/`ifdef/;
@@ -273,10 +293,11 @@ while(<FILE>) {
 
    # Any line with a pin or wire keyword we can skip.
    next if $_[0] eq "input" || $_[0] eq "output" || $_[0] eq "inout"
-      || $_[0] eq "wire";
+      || $_[0] eq "wire" || $_[0] eq "supply0" || $_[0] eq "supply1";
 
    # If it is a module we need the module name
    if ($_[0] eq "module") {
+       print "** Module $_[1]\n" if $opt_d;
        $module = $_[1];
        $lastmodule = $module;
        $ismodule{$_[1]} = 1;
@@ -290,6 +311,12 @@ while(<FILE>) {
    # Anything else gets counted.
    } else {
       $cnt{$module}{$_[0]} = $cnt{$module}{$_[0]} + 1;
+      # If this component is not in any of the libraries, we raise a flag.
+      if (!$ismodule{$_[0]} && $celllib{$_[0]} eq "" &&
+            @opt_s>0 && !$alreadyflagged{$_[0]}) {
+         print "** WARN ** Cpiçd not find instance $_[0]\n";
+         $alreadyflagged{$_[0]} = 1;
+      }
    }
 }
 close FILE;
@@ -363,7 +390,7 @@ sub getinst {
 
          # We then generate the table row. If a library was given we put the
          # columns for the library data.
-         if ($opt_s) {
+         if (@opt_s>0) {
             $cln = substr($cln, 0, 50) if length($cln) > 50;
             push @dump,
                sprintf("%-50s %10.3f %10.5f %7d\n", $cln, $a*$opt_A, $p*$opt_L,
@@ -378,7 +405,7 @@ sub getinst {
 }
 
 # Now we generate the table.
-if ($opt_s) {
+if (@opt_s>0) {
    $powerlabel = "power(" . $leakunit . ")";
    printf("%-50s %10s %10s %7s\n", "Instance", "area", $powerlabel, "cells");
    printf("%-50s %10s %10s %7s\n", "=" x 50, "=" x 10, "=" x 10, "=" x 7);
