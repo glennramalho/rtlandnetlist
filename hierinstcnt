@@ -26,19 +26,23 @@ $progname=~s#.*/##;
 $version = '$Id$' . "\n";
 $usage=
 "usage: $progname [-hV]
-       $progname [-dSi] [-s lib] [-l level] [-A factor] [-L factor] file.v\n";
+       $progname [-dSic] [-s lib] [-l level] [-A factor] [-L factor]
+                 [-C pat] file.v\n";
 $help="
 This program prints the cells in a Verilog netlist and how many times each is
 instantiated in the hierarchy.
 
 -h     help
 -V     Version
--d     debug, implies -L
+-d     debug, implies -S
 -S     list library stats
 -s     calculate power using the following liberty file. If the file ends in
          .gz it will be uncompressed first.
 -i     print hierarchy in instances instead of modules
--l     specify maximum level depth.
+-c     print report by libcell component instead of hierarchy
+-C     same as -c but can be used to send a pattern to strip the name.
+         The pattern will be used will be: s/.*(pat).*/\\1/
+-l     specify maximum level depth (ignored with -c).
 -A     Multiply the area by a factor.
 -L     Multiply the leakage by a factor.
 file.v The file to be checked. If it ends in .gz it will be uncompressed first.
@@ -53,7 +57,9 @@ GetOptions(
    "S" => \$opt_S,
    "s=s" => \@opt_s,
    "i" => \$opt_i,
-   "l=i" => \$opt_i,
+   "c" => \$opt_c,
+   "C=s" => \$opt_C,
+   "l=i" => \$opt_l,
    "A=f" => \$opt_A,
    "L=f" => \$opt_L) || die $usage;
 
@@ -66,10 +72,12 @@ if ($opt_V) {
    printf $version;
    exit 0;
 }
-if (@ARGV != 1) {
+if (@ARGV < 1) {
    die $usage;
 }
+# Some options imply others.
 $opt_S = 1 if ${opt_d};
+$opt_c = 1 if ${opt_C};
 
 $module = "";
 sub nl {
@@ -100,6 +108,26 @@ sub getnum {
    $v =~ s/\s*\"\s*$//;
    # We add zero to make sure it is a val and return it.
    return $v + 0.0;
+}
+
+#######################################
+# sub reportrow
+# Generates a row in the report table.
+sub reportrow {
+   local($name, $area, $power, $count, $repoarea) = @_;
+   local($line);
+   if ($repoarea) {
+      # If the name is too long we cap it
+      $name = substr($name, 0, 50) if length($name) > 50;
+
+      # Then we generare the line.
+      $line =
+         sprintf("%-50s %10.3f %10.5f %7d\n", $name, $area, $power, $count);
+   } else {
+      $name = substr($name, 0, 70) if length($name) > 70;
+      $line = sprintf("%-70s %7d\n", $name, $count);
+   }
+   $line;
 }
 
 # If opt_s is used, we need to get the data from the liberty file.
@@ -255,84 +283,21 @@ if (defined $opt_L) {
   $opt_L = 1;
 }
 
-# If the file ends in .gz it must be gzipped. We unzip it and read it then.
-if ($ARGV[0] =~ m/\.gz$/) {
-   open FILE, "gunzip -c $ARGV[0]|" || die "$progname: $ARGV[0]: $!\n";
-} else {
-   open FILE, $ARGV[0] || die "$progname: $ARGV[0]: $!\n";
-}
-print "Reading netlist $ARGV[0]\n";
-$incomment = 0;
-while(<FILE>) {
-   # Remove whitespace
-   if ($incomment) {
-      next unless (s#.*\*/##);
-      $incomment = 0;
-   }
-   s#/\*.*\*/##;
-   if (s#/\*.*##) {
-      $incomment = 1;
-   }
-   $_ = nl($_);
-   next if m/^$/;
-   last if m/`ifdef/;
-
-   # When we find the endmodule we exit. We also compute the power consumed.
-   if (/endmodule/) {
-      $module = ""; 
-      next;
-   }
-   # If a line does not end in a semicolon, we merge it with the next line.
-   # We need to stop if we hit the end of file.
-   while ($_ !~ /;$/ && ! eof(FILE) ) {
-      $_ = nl($_ . <FILE>);
-   }
-
-   # Once we hit here we can split the line.
-   @_ = split /[      ]+/;
-
-   # Any line with a pin or wire keyword we can skip.
-   next if $_[0] eq "input" || $_[0] eq "output" || $_[0] eq "inout"
-      || $_[0] eq "wire" || $_[0] eq "supply0" || $_[0] eq "supply1";
-
-   # If it is a module we need the module name
-   if ($_[0] eq "module") {
-       print "** Module $_[1]\n" if $opt_d;
-       $module = $_[1];
-       $lastmodule = $module;
-       $ismodule{$_[1]} = 1;
-
-   # If we are in instance mode, we need to check the component. If it is
-   # primitive, we put it in the count list. If it is not primitive, we put
-   # it in the instance list.
-   } elsif ($opt_i && $ismodule{$_[0]} == 1) {
-      $inst{$module}{$_[1]} = $_[0];
-
-   # Anything else gets counted.
-   } else {
-      $cnt{$module}{$_[0]} = $cnt{$module}{$_[0]} + 1;
-      # If this component is not in any of the libraries, we raise a flag.
-      if (!$ismodule{$_[0]} && $celllib{$_[0]} eq "" &&
-            @opt_s>0 && !$alreadyflagged{$_[0]}) {
-         print "** WARN ** Cpiçd not find instance $_[0]\n";
-         $alreadyflagged{$_[0]} = 1;
-      }
-   }
-}
-close FILE;
-
-print "Generating Table...\n";
-
 sub getinst {
    local ($lvl, $this, $thisinst) = @_;
-   local ($v) = 0;
-   local ($p) = 0;
-   local ($a) = 0;
+   local ($v) = 0; # Number of times
+   local ($p) = 0; # Power
+   local ($a) = 0; # Area
    local ($m) = "";
+
+   # If this is not a module, then it must be a primitive component, so we
+   # collect the data for it.
    if ($ismodule{$this} != 1) {
       $v = 1;
       $p = $leak{$this};
       $a = $area{$this};
+   # If we are dealing with a module we need to check the components and
+   # modules in it.
    } else {
       $v = 0;
       $p = 0;
@@ -360,25 +325,41 @@ sub getinst {
          # Now we call the function recursively to calculate the values of the
          # subcells.
          local($sub_v,$sub_p,$sub_a) = getinst($lvl + 1, $m, "");
+         # And we increment the counters with the results for the subblock.
+         # We multiply the result by the number of times the module occurs.
          $v = $v + $sub_v * $cnt{$this}{$m};
          $p = $p + $sub_p * $cnt{$this}{$m};
          $a = $a + $sub_a * $cnt{$this}{$m};
+
+         # If this is a component, we also have to count how many times it
+         # has happened.
+         if (!$ismodule{$m}) {
+            $m_base = $m;
+            $m_base =~ s/.*($opt_C).*/$1/ if ${opt_C};
+            $c{$m_base} = $c{$m_base} + $cnt{$this}{$m};
+         }
+
          if ($opt_d) {
             print "mod $this obj $m -> " .
                "sub (v=$sub_v, p=$sub_p, a=$sub_a) * $cnt{$this}{$m} " .
-               "-> v=$v,p=$p,a=$a\n"
+               "-> v=$v,p=$p,a=$a";
+            if (!$ismodule{$m}) {
+               print ", c{$m_base} = $c{$m_base};";
+            }
+            print "\n";
          }
       }
 
       # It is not primitive, so we print what it has.
-      if ($opt_d && $opt_s) {
+      if ($opt_d && @opt_s>0) {
          print "module $this has $v cells and $p leakage\n";
       } elsif ($opt_d) {
          print "module $this has $v cells\n";
       }
 
-      # And we go generating the report
-      if ($opt_l eq "" || $lvl < $opt_l) {
+      # And we go generating the report, we only do this if we are not
+      # reporting component counts.
+      if (!$opt_c && ($opt_l eq "" || $lvl < $opt_l)) {
          # We need to decide if this will be listed as a module or as a inst.
          # If we reach here this is not a leaf, so if there was a a instance
          # name we use it.
@@ -390,32 +371,115 @@ sub getinst {
 
          # We then generate the table row. If a library was given we put the
          # columns for the library data.
-         if (@opt_s>0) {
-            $cln = substr($cln, 0, 50) if length($cln) > 50;
-            push @dump,
-               sprintf("%-50s %10.3f %10.5f %7d\n", $cln, $a*$opt_A, $p*$opt_L,
-               $v);
-         } else {
-            $cln = substr($cln, 0, 70) if length($cln) > 70;
-            push @dump, sprintf("%-70s %7d\n", $cln, $v);
-         }
+         push @dump, reportrow($cln, $a*$opt_A, $p*$opt_L, $v, @opt_s>0);
       }
    }
    $v,$p,$a;
 }
 
-# Now we generate the table.
-if (@opt_s>0) {
-   $powerlabel = "power(" . $leakunit . ")";
-   printf("%-50s %10s %10s %7s\n", "Instance", "area", $powerlabel, "cells");
-   printf("%-50s %10s %10s %7s\n", "=" x 50, "=" x 10, "=" x 10, "=" x 7);
-} else {
-   printf("%-70s %7s\n", "Instance", "cells");
-   printf("%-70s %7s\n", "=" x 70, "=" x 5);
+sub procfile {
+   local($FILE) = @_;
+   %ismodule = {};
+   $lastmodule = "";
+   %cnt = {};
+
+   # If the file ends in .gz it must be gzipped. We unzip it and read it then.
+   if ($FILE =~ m/\.gz$/) {
+      open FILE, "gunzip -c $FILE|" || die "$progname: $FILE: $!\n";
+   } else {
+      open FILE, $FILE || die "$progname: $FILE: $!\n";
+   }
+   print "Reading netlist $FILE\n";
+   $incomment = 0;
+   while(<FILE>) {
+      # Remove whitespace
+      if ($incomment) {
+         next unless (s#.*\*/##);
+         $incomment = 0;
+      }
+      s#/\*.*\*/##;
+      if (s#/\*.*##) {
+         $incomment = 1;
+      }
+      $_ = nl($_);
+      next if m/^$/;
+      last if m/`ifdef/;
+
+      # When we find the endmodule we exit. We also compute the power consumed.
+      if (/endmodule/) {
+         $module = ""; 
+         next;
+      }
+      # If a line does not end in a semicolon, we merge it with the next line.
+      # We need to stop if we hit the end of file.
+      while ($_ !~ /;$/ && ! eof(FILE) ) {
+         $_ = nl($_ . <FILE>);
+      }
+
+      # Once we hit here we can split the line.
+      @_ = split /[ \t]+/;
+
+      # Any line with a pin or wire keyword we can skip.
+      next if $_[0] eq "input" || $_[0] eq "output" || $_[0] eq "inout"
+         || $_[0] eq "wire" || $_[0] eq "supply0" || $_[0] eq "supply1";
+
+      # If it is a module we need the module name
+      if ($_[0] eq "module") {
+          print "** Module $_[1]\n" if $opt_d;
+          $module = $_[1];
+          $lastmodule = $module;
+          $ismodule{$_[1]} = 1;
+
+      # If we are in instance mode, we need to check the component. If it is
+      # primitive, we put it in the count list. If it is not primitive, we put
+      # it in the instance list.
+      } elsif ($opt_i && $ismodule{$_[0]} == 1) {
+         $inst{$module}{$_[1]} = $_[0];
+
+      # Anything else gets counted.
+      } else {
+         $cnt{$module}{$_[0]} = $cnt{$module}{$_[0]} + 1;
+         # If this component is not in any of the libraries, we raise a flag.
+         if (!$ismodule{$_[0]} && $celllib{$_[0]} eq "" &&
+               @opt_s>0 && !$alreadyflagged{$_[0]}) {
+            print "** WARN ** Could not find instance $_[0]\n";
+            $alreadyflagged{$_[0]} = 1;
+         }
+      }
+   }
+   close FILE;
+
+   print "Generating Table...\n";
+
+   # Now we generate the table.
+   if (@opt_s>0) {
+      $powerlabel = "power(" . $leakunit . ")";
+      printf("%-50s %10s %10s %7s\n", "Instance", "area", $powerlabel, "cells");
+      printf("%-50s %10s %10s %7s\n", "=" x 50, "=" x 10, "=" x 10, "=" x 7);
+   } else {
+      printf("%-70s %7s\n", "Instance", "cells");
+      printf("%-70s %7s\n", "=" x 70, "=" x 5);
+   }
+
+   @dump = ();
+   getinst(0, $lastmodule, "");
+
+   # If we are reporting instance counts, we generate the report here. If not,
+   # we then should have the report in the dump array.
+   if ($opt_c) {
+      # And we generate the report.
+      foreach $component (sort keys %c) {
+         $p = $leak{$component} * $opt_L; # Power
+         $a = $area{$component} * $opt_A; # Area
+         $cnt = $c{$component};           # Count
+         push @dump, reportrow($component, $a, $p, $cnt, @opt_s>0);
+      }
+   }
+
+   # And now we generate the report.
+   for $_ (0..$#dump) {
+      print ${dump[$#dump-$_]};
+   }
 }
 
-@dump = ();
-getinst(0, $lastmodule, "");
-for $_ (0..$#dump) {
-   print ${dump[$#dump-$_]};
-}
+foreach (@ARGV) {procfile($_)};
